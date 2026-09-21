@@ -1,0 +1,21 @@
+schema_version: "1.0"
+resume_path: private/resume.pdf
+companies_path: companies.yaml
+output_dir: runs
+as_of: 2026-09-21
+timezone: America/Anchorage
+match_threshold: 0.85
+scoring_weights:
+  requirements: 0.60
+  preferences: 0.25
+  company: 0.15
+preferences:
+  locations: null
+  remote: null
+  salary_min: null
+runtime:
+  model: gpt-5
+  max_concurrency: 4
+  timeout_seconds: 120
+collectors: []
+

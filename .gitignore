@@ -1,0 +1,26 @@
+# Private inputs and generated state
+config.yaml
+companies.yaml
+resume*
+private/
+inputs/
+profiles/
+runs/
+output/
+outputs/
+secrets/
+models/
+artifacts/
+browser-state/
+.browser/
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+*.egg-info/

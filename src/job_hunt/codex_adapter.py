@@ -161,7 +161,7 @@ class CodexAdapter:
         output = self._invoke(
             _ASSESSMENT,
             {
-                "candidate_profile": profile.model_dump(mode="json"),
+                "candidate_profile": profile.model_dump(mode="json", exclude={"resume_text"}),
                 "requirements": requirements.model_dump(mode="json"),
             },
         )
@@ -226,7 +226,7 @@ class CodexAdapter:
             schema_path.write_text(json.dumps(_schema(operation.output_model)), encoding="utf-8")
             prompt = f"{_POLICY}\nOPERATION: {operation.prompt}\n"
             if previous_error is not None:
-                prompt += f"REPAIR: The previous response failed validation: {previous_error}\n"
+                prompt += "REPAIR: Return a valid response matching the supplied JSON schema.\n"
             prompt += "INPUT_DATA_JSON:\n" + json.dumps(input_data, ensure_ascii=False)
 
             command = [
@@ -250,12 +250,16 @@ class CodexAdapter:
                 "browser_use",
                 "--disable",
                 "standalone_web_search",
+                "--disable",
+                "shell_tool",
                 "-c",
                 'web_search="disabled"',
                 "-c",
                 "mcp_servers={}",
                 "-c",
                 'shell_environment_policy.inherit="none"',
+                "-c",
+                "shell_environment_policy.set={ JOB_HUNT_CODEX_ACTIVE = '1' }",
                 "--model",
                 self.model,
                 "--output-schema",

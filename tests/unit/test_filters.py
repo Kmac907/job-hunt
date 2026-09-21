@@ -9,6 +9,7 @@ from job_hunt.filters import (
     evaluate_gate,
 )
 from job_hunt.models import Disposition
+from job_hunt.scoring import score_categories
 
 
 def test_clearance_background_location_and_authorization_are_distinct_gates() -> None:
@@ -85,3 +86,25 @@ def test_failed_mandatory_gate_cannot_be_overridden_by_score() -> None:
         EligibilityProfile(work_authorized=False),
     )
     assert disposition_for(eligibility, 1.0, 0.85) == Disposition.EXCLUDED
+
+
+def test_duplicate_gate_ids_are_rejected() -> None:
+    gates = [
+        MandatoryGate(gate_id="auth", kind="work_authorization", value=True),
+        MandatoryGate(gate_id="auth", kind="work_authorization", value=False),
+    ]
+
+    with pytest.raises(ValueError, match="duplicate gate ID"):
+        evaluate_eligibility(gates, EligibilityProfile(work_authorized=False))
+
+
+def test_disposition_uses_unrounded_total_score() -> None:
+    result = score_categories(
+        {"requirements": 0.849}, {"requirements": 1}, threshold=0.85
+    )
+
+    assert result is not None
+    assert (
+        disposition_for("true", result.total_score, result.threshold)
+        == Disposition.BELOW_THRESHOLD
+    )

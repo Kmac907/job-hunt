@@ -1,7 +1,19 @@
 import pytest
 
-from job_hunt.models import EvidenceClassification
-from job_hunt.scoring import SCORING_VERSION, classification_value, score_categories
+from job_hunt.models import (
+    Assessment,
+    EvidenceClassification,
+    RequirementRecord,
+    RequirementSet,
+    ScoreBreakdown,
+)
+from job_hunt.scoring import (
+    SCORING_VERSION,
+    classification_value,
+    score_assessment,
+    score_categories,
+)
+from job_hunt.validation import AssessmentValidationError
 
 
 def test_classification_values_keep_contradiction_semantically_distinct() -> None:
@@ -48,3 +60,59 @@ def test_threshold_uses_unrounded_score() -> None:
     assert result is not None and result.score == 0.85
     assert result.unrounded_score == 0.849
     assert not result.meets_threshold
+    assert result.total_score == 0.849
+
+
+def test_requirement_set_cannot_be_bypassed_by_legacy_scores() -> None:
+    requirements = RequirementSet(
+        job_id="j1",
+        requirements=[
+            RequirementRecord(requirement_id="r1", category="required", text="Python")
+        ],
+    )
+    assessment = Assessment(
+        candidate_id="c1",
+        job_id="j1",
+        scores=ScoreBreakdown(requirements=1, preferences=1, company=1),
+    )
+
+    with pytest.raises(AssessmentValidationError, match="omitted requirement IDs"):
+        score_assessment(assessment, requirements, {})
+
+
+def test_structured_assessment_keeps_company_score() -> None:
+    requirements = RequirementSet(
+        job_id="j1",
+        requirements=[
+            RequirementRecord(requirement_id="r1", category="required", text="Python"),
+            RequirementRecord(requirement_id="p1", category="preferred", text="Go"),
+        ],
+    )
+    assessment = Assessment.model_validate(
+        {
+            "candidate_id": "c1",
+            "job_id": "j1",
+            "scores": {"requirements": 0, "preferences": 0, "company": 1},
+            "requirement_assessments": [
+                {
+                    "requirement_id": "r1",
+                    "classification": "fully_supported",
+                    "evidence": [{"source_id": "resume", "quote": "Python"}],
+                    "supported_portions": ["Python"],
+                },
+                {
+                    "requirement_id": "p1",
+                    "classification": "partially_supported",
+                    "evidence": [{"source_id": "resume", "quote": "Go"}],
+                    "supported_portions": ["Go"],
+                    "missing_portions": ["depth"],
+                },
+            ],
+        }
+    )
+
+    result = score_assessment(assessment, requirements, {"resume": "Python and Go"})
+
+    assert result is not None
+    assert result.unrounded_score == pytest.approx(0.875)
+    assert result.categories["company"].score == 1

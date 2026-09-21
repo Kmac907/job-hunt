@@ -117,7 +117,11 @@ def evaluate_eligibility(
     gates: Iterable[MandatoryGate],
     profile: EligibilityProfile,
 ) -> EligibilityResult:
-    results = {gate.gate_id: evaluate_gate(gate, profile) for gate in gates}
+    results: dict[str, TruthValue] = {}
+    for gate in gates:
+        if gate.gate_id in results:
+            raise ValueError(f"duplicate gate ID: {gate.gate_id}")
+        results[gate.gate_id] = evaluate_gate(gate, profile)
     state = (
         evaluate_logic(LogicOperator.ALL, results.values())
         if results

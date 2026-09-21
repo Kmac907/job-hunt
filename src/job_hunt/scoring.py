@@ -45,7 +45,7 @@ class ScoringResult(BaseModel):
 
     @property
     def total_score(self) -> float:
-        return self.score
+        return self.unrounded_score
 
 
 def classification_value(classification: EvidenceClassification | str) -> float:
@@ -108,12 +108,18 @@ def score_assessment(
 ) -> ScoringResult | None:
     if not assessment.complete:
         return None
-    if assessment.requirement_assessments:
-        if requirements is None or sources is None:
+    if requirements is not None:
+        if sources is None:
             raise ValueError(
                 "structured assessments must be validated with requirements and sources"
             )
         assessment = validate_assessment(assessment, requirements, sources)
+    elif assessment.requirement_assessments:
+        raise ValueError(
+            "structured assessments must be validated with requirements and sources"
+        )
+
+    if assessment.requirement_assessments:
         by_category: dict[str, list[float]] = defaultdict(list)
         records = {item.requirement_id: item for item in requirements.requirements}
         for item in assessment.requirement_assessments:
@@ -131,6 +137,8 @@ def score_assessment(
             for name, values in by_category.items()
             if values
         }
+        if assessment.scores is not None:
+            category_scores["company"] = assessment.scores.company
     elif assessment.scores is not None:
         category_scores = assessment.scores.model_dump()
     else:

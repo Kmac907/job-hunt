@@ -186,18 +186,40 @@ class MatchDecision(Contract):
     reason: str
 
 
+class RunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    AWAITING_REVIEW = "awaiting_review"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class RunManifest(Contract):
     run_id: str
     created_at: datetime
     as_of: date
     timezone: str
     effective_config: dict[str, Any]
+    status: RunStatus = RunStatus.PENDING
+    app_version: str | None = None
+    checkpoint: str | dict[str, Any] | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    failure: str | dict[str, Any] | None = None
+    skip_reason: str | None = None
     input_files: list[str] = Field(default_factory=list)
     output_files: list[str] = Field(default_factory=list)
+    output_metadata: dict[str, Any] = Field(default_factory=dict)
     model: str
 
     @model_validator(mode="after")
-    def require_aware_timestamp(self) -> "RunManifest":
+    def validate_run_metadata(self) -> "RunManifest":
         if self.created_at.tzinfo is None:
             raise ValueError("created_at must include a timezone")
+        if any(count < 0 for count in self.counts.values()):
+            raise ValueError("counts must not be negative")
+        if self.status == RunStatus.FAILED and self.failure is None:
+            raise ValueError("failed runs require failure metadata")
+        if self.status == RunStatus.SKIPPED and not self.skip_reason:
+            raise ValueError("skipped runs require a reason")
         return self

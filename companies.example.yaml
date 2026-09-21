@@ -1,0 +1,10 @@
+schema_version: "1.0"
+companies:
+  - name: Example Corp
+    careers_url: https://example.com/careers
+    since: 2026-08-01
+    scope:
+      titles: [software engineer]
+      locations: null
+      remote: null
+

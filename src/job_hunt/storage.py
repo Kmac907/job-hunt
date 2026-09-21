@@ -8,7 +8,8 @@ import os
 import socket
 import tempfile
 import uuid
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -120,17 +121,18 @@ class RunLock(AbstractContextManager["RunLock"]):
             "token": self.token,
         }
         payload = json.dumps(metadata).encode("utf-8")
-        while True:
-            try:
-                created = _atomic_create(self.path, payload)
-            except OSError as exc:
-                raise RunLockError(f"cannot create workspace lock {self.path}: {exc}") from exc
-            if not created:
-                if self._remove_stale():
-                    continue
-                raise RunLockError(f"another run holds the workspace lock: {self.path}") from None
-            self._held = True
-            return self
+        with _lock_guard(self.path):
+            while True:
+                try:
+                    created = _atomic_create(self.path, payload)
+                except OSError as exc:
+                    raise RunLockError(f"cannot create workspace lock {self.path}: {exc}") from exc
+                if not created:
+                    if self._remove_stale():
+                        continue
+                    raise RunLockError(f"another run holds the workspace lock: {self.path}") from None
+                self._held = True
+                return self
 
     def _remove_stale(self) -> bool:
         try:
@@ -151,9 +153,10 @@ class RunLock(AbstractContextManager["RunLock"]):
         if not self._held:
             return
         try:
-            metadata = json.loads(self.path.read_text(encoding="utf-8"))
-            if metadata.get("token") == self.token:
-                self.path.unlink(missing_ok=True)
+            with _lock_guard(self.path):
+                metadata = json.loads(self.path.read_text(encoding="utf-8"))
+                if metadata.get("token") == self.token:
+                    self.path.unlink(missing_ok=True)
         except (OSError, UnicodeError, json.JSONDecodeError):
             pass
         self._held = False
@@ -170,6 +173,34 @@ def _component(value: str | int) -> str:
     if not value or value in {".", ".."} or Path(value).name != value or "/" in value or "\\" in value:
         raise StorageError(f"invalid storage path component: {value!r}")
     return value
+
+
+@contextmanager
+def _lock_guard(path: Path) -> Iterator[None]:
+    """Serialize changes to a lock path; the OS releases this guard after crashes."""
+    with path.with_name(f"{path.name}.guard").open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def _json_bytes(value: BaseModel | dict[str, Any]) -> bytes:

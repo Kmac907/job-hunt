@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .codex_adapter import CodexAdapterError, codex_preflight
 from .config import ConfigError, preflight
 
 DISCLOSURE = "Disclosure: job data and resume content will be sent to external Codex processing when inference runs."
@@ -23,10 +24,14 @@ def main(argv: list[str] | None = None) -> int:
         print(DISCLOSURE, flush=True)
         try:
             config, companies = preflight(args.config)
-        except ConfigError as exc:
+            codex = codex_preflight(timeout_seconds=min(config.runtime.timeout_seconds, 10))
+        except (ConfigError, CodexAdapterError) as exc:
             print(f"doctor: ERROR: {exc}", file=sys.stderr)
             return 1
-        print(f"doctor: OK ({len(companies.companies)} companies, model {config.runtime.model})")
+        print(
+            f"doctor: OK ({len(companies.companies)} companies, model {config.runtime.model}, "
+            f"{codex.version})"
+        )
         return 0
     return 2
 

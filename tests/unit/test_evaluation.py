@@ -27,6 +27,7 @@ def test_dataset_separates_complete_sets_and_preserves_reviewers() -> None:
     assert {item.evaluation_set for item in dataset.examples} == set(EvaluationSet)
     unresolved = next(item for item in dataset.examples if item.example_id == "dev-unresolved")
     assert [label.supported for label in unresolved.requirement_labels] == [True, False]
+    assert [label.eligible.value for label in unresolved.eligibility_labels] == ["true", "unknown"]
     assert [label.shortlisted for label in unresolved.shortlist_labels] == [True, False]
 
 
@@ -64,6 +65,14 @@ def test_held_out_examples_cannot_be_used_for_tuning() -> None:
     payload["tuning_evidence"]["tuned_on_example_ids"].append("hold-fit")
 
     with pytest.raises(ValidationError, match="development examples only"):
+        EvaluationDataset.model_validate(payload)
+
+
+def test_held_out_labels_must_be_revealed_after_rubric_freeze() -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload["tuning_evidence"]["held_out_labels_revealed_at"] = payload["tuning_evidence"]["rubric_frozen_at"]
+
+    with pytest.raises(ValidationError, match="revealed after"):
         EvaluationDataset.model_validate(payload)
 
 

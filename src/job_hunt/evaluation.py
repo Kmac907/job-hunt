@@ -87,7 +87,7 @@ class RubricTuningEvidence(BaseModel):
     def labels_open_after_freeze(self) -> "RubricTuningEvidence":
         if self.rubric_frozen_at.tzinfo is None or self.held_out_labels_revealed_at.tzinfo is None:
             raise ValueError("evaluation audit timestamps must include a timezone")
-        if self.held_out_labels_revealed_at < self.rubric_frozen_at:
+        if self.held_out_labels_revealed_at <= self.rubric_frozen_at:
             raise ValueError("held-out labels must be revealed after the rubric is frozen")
         return self
 

@@ -1,4 +1,4 @@
-"""Versioned data contracts. Collector support is intentionally not modeled here."""
+"""Versioned data contracts."""
 
 from calendar import monthrange
 from datetime import date, datetime
@@ -142,6 +142,276 @@ class JobPosting(Contract):
     posted_at: date | datetime | None = None
     collected_at: datetime | None = None
     source: str | None = None
+
+
+class CollectorStatus(StrEnum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    BLOCKED = "blocked"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+
+
+class AvailabilityStatus(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+
+class CoverageKind(StrEnum):
+    ENUMERATION = "enumeration"
+    QUERY = "query"
+
+
+class SourceDatePrecision(StrEnum):
+    YEAR = "year"
+    MONTH = "month"
+    DAY = "day"
+    MINUTE = "minute"
+    SECOND = "second"
+    MILLISECOND = "millisecond"
+    UNKNOWN = "unknown"
+
+
+class SourceDate(BaseModel):
+    """A parsed date without discarding what the portal actually supplied."""
+
+    model_config = ConfigDict(extra="forbid")
+    original_name: str = Field(min_length=1)
+    raw_value: str = Field(min_length=1)
+    value: date | datetime | None = None
+    precision: SourceDatePrecision
+    utc_offset: str | None = None
+    meaning: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def retain_datetime_offset(self) -> "SourceDate":
+        if isinstance(self.value, datetime) and self.value.tzinfo is not None and self.utc_offset is None:
+            raise ValueError("timezone-aware source dates must retain their original UTC offset")
+        return self
+
+
+class PostingDates(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    original: SourceDate | None = None
+    last_published: SourceDate | None = None
+    updated: SourceDate | None = None
+    first_seen: SourceDate
+    last_verified: SourceDate | None = None
+
+
+class RawSnapshot(BaseModel):
+    """The exact response text and request metadata supporting a parsed result."""
+
+    model_config = ConfigDict(extra="forbid")
+    requested_url: HttpUrl
+    final_url: HttpUrl
+    fetched_at: datetime
+    status_code: int = Field(ge=100, le=599)
+    content_type: str | None = None
+    content: str
+    sha256: str | None = None
+
+    @model_validator(mode="after")
+    def hash_and_timestamp(self) -> "RawSnapshot":
+        if self.fetched_at.tzinfo is None:
+            raise ValueError("snapshot fetched_at must include a timezone")
+        digest = sha256(self.content.encode()).hexdigest()
+        if self.sha256 is not None and self.sha256 != digest:
+            raise ValueError("snapshot SHA-256 does not match its content")
+        self.sha256 = digest
+        return self
+
+
+class CollectorEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    snapshot_sha256: str = Field(min_length=64, max_length=64)
+    source_url: HttpUrl
+    observed_at: datetime
+    detail: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> "CollectorEvidence":
+        if self.observed_at.tzinfo is None:
+            raise ValueError("evidence observed_at must include a timezone")
+        return self
+
+
+def canonical_job_id(company: str, portal_job_id: str | None, canonical_url: str | None) -> str:
+    """Build identity from stable portal facts; titles are deliberately excluded."""
+
+    company_key = " ".join(company.casefold().split())
+    portal_key = portal_job_id.strip() if portal_job_id else ""
+    url_key = canonical_url.strip() if canonical_url else ""
+    if not company_key or not (portal_key or url_key):
+        raise ValueError("canonical identity requires company and portal job ID or canonical URL")
+    material = f"{company_key}\0{'id:' + portal_key if portal_key else 'url:' + url_key}"
+    return f"job-{sha256(material.encode()).hexdigest()[:20]}"
+
+
+class JobListing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    company: str = Field(min_length=1)
+    portal: str = Field(min_length=1)
+    portal_job_id: str | None = None
+    canonical_url: HttpUrl | None = None
+    title: str | None = None
+    locations: list[str] = Field(default_factory=list)
+    job_id: str | None = None
+
+    @model_validator(mode="after")
+    def assign_canonical_identity(self) -> "JobListing":
+        expected = canonical_job_id(
+            self.company, self.portal_job_id, str(self.canonical_url) if self.canonical_url else None
+        )
+        if self.job_id is not None and self.job_id != expected:
+            raise ValueError("job_id does not match canonical company/portal identity")
+        self.job_id = expected
+        return self
+
+
+class NormalizedJobPosting(JobListing):
+    canonical_url: HttpUrl
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    dates: PostingDates
+    employment_type: str | None = None
+    department: str | None = None
+    salary: str | None = None
+    raw_fields: dict[str, Any] = Field(default_factory=dict)
+
+    def as_job_posting(self) -> JobPosting:
+        posted = self.dates.original or self.dates.last_published
+        return JobPosting(
+            job_id=self.job_id or "",
+            company=self.company,
+            title=self.title,
+            description=self.description,
+            url=self.canonical_url,
+            location="; ".join(self.locations) or None,
+            posted_at=posted.value if posted else None,
+            collected_at=self.dates.first_seen.value
+            if isinstance(self.dates.first_seen.value, datetime)
+            else None,
+            source=self.portal,
+        )
+
+
+class CollectorProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pages_attempted: int = Field(default=0, ge=0)
+    pages_completed: int = Field(default=0, ge=0)
+    queries_attempted: int = Field(default=0, ge=0)
+    queries_completed: int = Field(default=0, ge=0)
+    listings_seen: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def completed_were_attempted(self) -> "CollectorProgress":
+        if self.pages_completed > self.pages_attempted:
+            raise ValueError("completed pages cannot exceed attempted pages")
+        if self.queries_completed > self.queries_attempted:
+            raise ValueError("completed queries cannot exceed attempted queries")
+        return self
+
+
+class CollectorCoverage(BaseModel):
+    """Facts about a bounded enumeration or query, never portal-wide guesses."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: CoverageKind
+    scope: str = Field(min_length=1)
+    pages: list[str] = Field(default_factory=list)
+    queries: list[str] = Field(default_factory=list)
+    limits: dict[str, int] = Field(default_factory=dict)
+    failures: list[str] = Field(default_factory=list)
+    total: int | None = Field(default=None, ge=0)
+    complete: bool | None = None
+
+    @model_validator(mode="after")
+    def completion_is_evidenced(self) -> "CollectorCoverage":
+        if any(value < 0 for value in self.limits.values()):
+            raise ValueError("coverage limits cannot be negative")
+        if self.kind == CoverageKind.QUERY and not self.queries:
+            raise ValueError("query coverage requires the exact queries")
+        if self.complete is True and (self.total is None or self.failures):
+            raise ValueError("complete coverage requires a known total and no failures")
+        return self
+
+
+class DiscoverResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: CollectorStatus
+    listings: list[JobListing] = Field(default_factory=list)
+    progress: CollectorProgress = Field(default_factory=CollectorProgress)
+    coverage: CollectorCoverage
+    snapshots: list[RawSnapshot] = Field(default_factory=list)
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def honest_status(self) -> "DiscoverResult":
+        if self.status == CollectorStatus.SUCCESS and (self.error or self.coverage.failures):
+            raise ValueError("successful discovery cannot contain failures")
+        if self.status == CollectorStatus.SUCCESS:
+            unique = {listing.job_id for listing in self.listings}
+            if not self.snapshots:
+                raise ValueError("successful discovery requires raw snapshots")
+            if self.coverage.complete is not True or self.coverage.total != len(unique):
+                raise ValueError("successful discovery requires complete, reconciling coverage")
+        if self.status in {CollectorStatus.BLOCKED, CollectorStatus.UNSUPPORTED, CollectorStatus.FAILED}:
+            if not self.error:
+                raise ValueError(f"{self.status} discovery requires an error")
+            if self.listings:
+                raise ValueError(f"{self.status} discovery cannot return listings")
+        return self
+
+
+class FetchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: CollectorStatus
+    posting: NormalizedJobPosting | None = None
+    progress: CollectorProgress = Field(default_factory=CollectorProgress)
+    snapshots: list[RawSnapshot] = Field(default_factory=list)
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def honest_status(self) -> "FetchResult":
+        if self.status == CollectorStatus.SUCCESS and (self.posting is None or not self.snapshots):
+            raise ValueError("successful fetch requires a complete posting and raw snapshot")
+        if self.status != CollectorStatus.SUCCESS and self.posting is not None:
+            raise ValueError("non-successful fetch cannot return a normalized posting")
+        if self.status in {CollectorStatus.BLOCKED, CollectorStatus.UNSUPPORTED, CollectorStatus.FAILED} and not self.error:
+            raise ValueError(f"{self.status} fetch requires an error")
+        return self
+
+
+class VerifyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: CollectorStatus
+    availability: AvailabilityStatus = AvailabilityStatus.UNKNOWN
+    progress: CollectorProgress = Field(default_factory=CollectorProgress)
+    snapshots: list[RawSnapshot] = Field(default_factory=list)
+    evidence: list[CollectorEvidence] = Field(default_factory=list)
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def availability_is_evidenced(self) -> "VerifyResult":
+        if self.availability != AvailabilityStatus.UNKNOWN and not self.evidence:
+            raise ValueError("open/closed availability requires evidence")
+        if self.status == CollectorStatus.SUCCESS and self.availability == AvailabilityStatus.UNKNOWN:
+            raise ValueError("successful verification must establish open or closed")
+        if self.status == CollectorStatus.SUCCESS:
+            hashes = {snapshot.sha256 for snapshot in self.snapshots}
+            if not hashes or any(item.snapshot_sha256 not in hashes for item in self.evidence):
+                raise ValueError("verification evidence must reference its raw snapshots")
+        if self.status in {CollectorStatus.BLOCKED, CollectorStatus.UNSUPPORTED, CollectorStatus.FAILED}:
+            if not self.error:
+                raise ValueError(f"{self.status} verification requires an error")
+            if self.availability != AvailabilityStatus.UNKNOWN:
+                raise ValueError("failed verification cannot establish availability")
+        return self
+
+
+DiscoveryResult = DiscoverResult
 
 
 class RequirementCategory(StrEnum):

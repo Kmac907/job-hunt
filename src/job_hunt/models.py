@@ -331,3 +331,104 @@ class RunManifest(Contract):
         if self.status == RunStatus.SKIPPED and not self.skip_reason:
             raise ValueError("skipped runs require a reason")
         return self
+
+
+class CollectionAttempt(BaseModel):
+    """Saved collection history; reports never retry collection themselves."""
+
+    model_config = ConfigDict(extra="forbid")
+    attempt_id: str
+    source: str
+    scope: str
+    attempted_at: datetime
+    discovered_job_ids: list[str] = Field(default_factory=list)
+    discovered_total: int | None = Field(default=None, ge=0)
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def timestamp_is_aware(self) -> "CollectionAttempt":
+        if self.attempted_at.tzinfo is None:
+            raise ValueError("attempted_at must include a timezone")
+        return self
+
+
+class ReportJobRecord(Contract):
+    """One validated, persisted final disposition used to regenerate reports."""
+
+    run_id: str
+    job: JobPosting
+    disposition: Disposition
+    candidate_id: str
+    profile_hash: str
+    assessment: Assessment | None = None
+    raw_score: float | None = Field(default=None, ge=0, le=1)
+    rounded_score: float | None = Field(default=None, ge=0, le=1)
+    threshold: float = Field(default=0.85, ge=0, le=1)
+    eligibility: str = "unknown"
+    gates: dict[str, str] = Field(default_factory=dict)
+    original_date_verified: bool = False
+    available: bool | None = None
+    source_record_ids: list[str] = Field(min_length=1)
+    reason: str = ""
+    validated: Literal[True] = True
+
+    @model_validator(mode="after")
+    def consistent_references(self) -> "ReportJobRecord":
+        if self.assessment is not None:
+            if self.assessment.job_id != self.job.job_id:
+                raise ValueError("assessment and report job IDs must match")
+            if self.assessment.candidate_id != self.candidate_id:
+                raise ValueError("assessment and report candidate IDs must match")
+        if self.raw_score is not None and self.rounded_score is None:
+            self.rounded_score = round(self.raw_score, 2)
+        return self
+
+
+class CoverageSummary(Contract):
+    """Scope-bounded collection facts and their complete attempt history."""
+
+    scope: str = Field(min_length=1)
+    source_total: int | None = Field(default=None, ge=0)
+    scope_complete: bool | None = None
+    unique_jobs: int = Field(ge=0)
+    final_dispositions: dict[Disposition, int]
+    attempts: list[CollectionAttempt] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def counts_reconcile(self) -> "CoverageSummary":
+        missing = set(Disposition) - set(self.final_dispositions)
+        if missing:
+            raise ValueError("final disposition counts must include every disposition")
+        if sum(self.final_dispositions.values()) != self.unique_jobs:
+            raise ValueError("final disposition counts must reconcile to unique jobs")
+        if self.scope_complete is True and self.source_total is None:
+            raise ValueError("scope completion requires a known source total")
+        if self.scope_complete is True and self.source_total != self.unique_jobs:
+            raise ValueError("complete scope total must match unique jobs")
+        return self
+
+
+class ReportSnapshot(Contract):
+    """The complete saved input from which every report format is rendered."""
+
+    run_id: str
+    as_of: date
+    scope: str = Field(min_length=1)
+    jobs: list[ReportJobRecord]
+    coverage: CoverageSummary
+
+    @model_validator(mode="after")
+    def records_reconcile(self) -> "ReportSnapshot":
+        if any(job.run_id != self.run_id for job in self.jobs):
+            raise ValueError("report jobs must belong to the snapshot run")
+        ids = [job.job.job_id for job in self.jobs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("each job must have exactly one final disposition")
+        if self.scope != self.coverage.scope:
+            raise ValueError("snapshot and coverage scopes must match")
+        counts = {item: 0 for item in Disposition}
+        for job in self.jobs:
+            counts[job.disposition] += 1
+        if self.coverage.unique_jobs != len(ids) or self.coverage.final_dispositions != counts:
+            raise ValueError("coverage does not match report jobs")
+        return self

@@ -1,7 +1,9 @@
 """Scope-bounded evaluation contracts and metrics for labeled examples."""
 
+import json
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -81,7 +83,7 @@ class RubricTuningEvidence(BaseModel):
     tuned_on_example_ids: set[str] = Field(min_length=1)
     rubric_frozen_at: datetime
     held_out_labels_revealed_at: datetime
-    held_out_labels_used_for_tuning: Literal[False] = False
+    held_out_labels_used_for_tuning: Literal[False]
 
     @model_validator(mode="after")
     def labels_open_after_freeze(self) -> "RubricTuningEvidence":
@@ -115,6 +117,8 @@ class EvaluationDataset(BaseModel):
         }
         if not self.tuning_evidence.tuned_on_example_ids <= development_ids:
             raise ValueError("rubric tuning may use development examples only")
+        if self.tuning_evidence.held_out_labels_hash != held_out_labels_hash(self.examples):
+            raise ValueError("held-out labels hash does not match held-out labels")
         return self
 
 
@@ -142,6 +146,17 @@ class EvaluationReport(BaseModel):
     ats_note: Literal["Results do not establish equivalence to any employer ATS."] = ATS_NOTE
     tuning_evidence: RubricTuningEvidence
     sets: dict[EvaluationSet, SetEvaluationReport]
+
+
+def held_out_labels_hash(examples: list[EvaluationExample]) -> str:
+    label_fields = {"example_id", "requirement_labels", "eligibility_labels", "shortlist_labels"}
+    labels = [
+        example.model_dump(mode="json", include=label_fields)
+        for example in sorted(examples, key=lambda item: item.example_id)
+        if example.evaluation_set == EvaluationSet.HELD_OUT
+    ]
+    canonical = json.dumps(labels, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{sha256(canonical).hexdigest()}"
 
 
 def _consensus(values: list[bool | None]) -> bool | None:

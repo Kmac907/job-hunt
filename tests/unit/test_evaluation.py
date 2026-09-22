@@ -10,6 +10,7 @@ from job_hunt.evaluation import (
     EvaluationDataset,
     EvaluationSet,
     build_evaluation_report,
+    held_out_labels_hash,
 )
 
 
@@ -29,7 +30,7 @@ DATASET_JSON = r'''{
   "tuning_evidence": {
     "rubric_version":"1",
     "rubric_hash":"sha256:rubric",
-    "held_out_labels_hash":"sha256:labels",
+    "held_out_labels_hash":"sha256:2236672d1b50829cdb616c6362b90401cbe5b36e4f0562398c8b4f5fce93a7b6",
     "tuned_on_example_ids":["dev-fit","dev-mismatch","dev-mandatory","dev-sparse","dev-unresolved"],
     "rubric_frozen_at":"2026-01-01T00:00:00Z",
     "held_out_labels_revealed_at":"2026-01-02T00:00:00Z",
@@ -90,6 +91,24 @@ def test_held_out_examples_cannot_be_used_for_tuning() -> None:
     payload["tuning_evidence"]["tuned_on_example_ids"].append("hold-fit")
 
     with pytest.raises(ValidationError, match="development examples only"):
+        EvaluationDataset.model_validate(payload)
+
+
+def test_held_out_labels_hash_must_match_labels() -> None:
+    payload = load_payload()
+    dataset = EvaluationDataset.model_validate(payload)
+    assert dataset.tuning_evidence.held_out_labels_hash == held_out_labels_hash(dataset.examples)
+
+    payload["examples"][5]["shortlist_labels"][0]["shortlisted"] = False
+    with pytest.raises(ValidationError, match="hash does not match"):
+        EvaluationDataset.model_validate(payload)
+
+
+def test_held_out_use_attestation_must_be_explicit() -> None:
+    payload = load_payload()
+    del payload["tuning_evidence"]["held_out_labels_used_for_tuning"]
+
+    with pytest.raises(ValidationError, match="held_out_labels_used_for_tuning"):
         EvaluationDataset.model_validate(payload)
 
 

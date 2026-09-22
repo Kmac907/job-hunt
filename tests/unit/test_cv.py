@@ -54,6 +54,20 @@ def test_docx_preserves_tabs_breaks_and_cell_paragraphs(tmp_path: Path) -> None:
     assert [block.text for block in snapshot.blocks] == ["Senior Engineer\nRemote", "Python\nGo"]
 
 
+def test_docx_content_controls_are_extracted_in_document_order(tmp_path: Path) -> None:
+    path = tmp_path / "controlled.docx"
+    xml = """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+      <w:sdt><w:sdtContent><w:p><w:r><w:t>Skills: Python</w:t></w:r></w:p></w:sdtContent></w:sdt>
+      <w:p><w:r><w:t>Experience</w:t></w:r></w:p>
+    </w:body></w:document>"""
+    with ZipFile(path, "w") as archive:
+        archive.writestr("word/document.xml", xml)
+
+    snapshot = extract_cv(path, required_sections=("Skills", "Experience"))
+
+    assert [block.text for block in snapshot.blocks] == ["Skills: Python", "Experience"]
+
+
 def test_text_pdf_pages_are_extracted_and_image_only_files_stop(tmp_path: Path) -> None:
     text_pdf = tmp_path / "cv.pdf"
     text_pdf.write_bytes(
@@ -68,6 +82,33 @@ def test_text_pdf_pages_are_extracted_and_image_only_files_stop(tmp_path: Path) 
     image_pdf.write_bytes(b"%PDF-1.4\n1 0 obj << /Type /Page /Subtype /Image >> endobj\n%%EOF")
     with pytest.raises(ExtractionReviewError, match="image-only"):
         extract_cv(image_pdf)
+
+
+def test_pdf_uses_font_cmaps_and_rejects_unreliable_position_order(tmp_path: Path) -> None:
+    mapped = tmp_path / "mapped.pdf"
+    mapped.write_bytes(
+        b"%PDF-1.4\n1 0 obj << /Type /Page /Resources << /Font << /F1 3 0 R >> >> /Contents 2 0 R >> endobj\n"
+        b"2 0 obj << >> stream\nBT /F1 12 Tf <41> Tj ET\nendstream\nendobj\n"
+        b"3 0 obj << /Type /Font /ToUnicode 4 0 R >> endobj\n"
+        b"4 0 obj << >> stream\n1 beginbfchar\n<41> <0050007900740068006F006E>\nendbfchar\nendstream\nendobj\n%%EOF"
+    )
+    assert extract_cv(mapped).blocks[0].text == "Python"
+
+    encoded = tmp_path / "encoded.pdf"
+    encoded.write_bytes(
+        b"%PDF-1.4\n1 0 obj << /Type /Page /Resources << /Font << /F1 3 0 R >> >> /Contents 2 0 R >> endobj\n"
+        b"2 0 obj << >> stream\nBT /F1 12 Tf <414243444546> Tj ET\nendstream\nendobj\n"
+        b"3 0 obj << /Type /Font /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /P /y /t /h /o /n] >> >> endobj\n%%EOF"
+    )
+    assert extract_cv(encoded).blocks[0].text == "Python"
+
+    reordered = tmp_path / "reordered.pdf"
+    reordered.write_bytes(
+        b"%PDF-1.4\n1 0 obj << /Type /Page /Contents 2 0 R >> endobj\n"
+        b"2 0 obj << >> stream\nBT 300 700 Td (Right column) Tj -300 0 Td (Left column) Tj ET\nendstream\nendobj\n%%EOF"
+    )
+    with pytest.raises(ExtractionReviewError, match="reading order unreliable"):
+        extract_cv(reordered)
 
 
 def test_pdf_page_tree_defines_page_ids_and_ambiguous_order_stops(tmp_path: Path) -> None:
@@ -103,6 +144,10 @@ def test_bad_or_incomplete_inputs_require_actionable_review(tmp_path: Path) -> N
 
     incomplete = tmp_path / "cv.txt"
     incomplete.write_text("Experience\nDeveloper", encoding="utf-8")
+    with pytest.raises(ExtractionReviewError, match="required section 'Skills'"):
+        extract_cv(incomplete, required_sections=("Skills",))
+
+    incomplete.write_text("Experience\nDiscussed softskills", encoding="utf-8")
     with pytest.raises(ExtractionReviewError, match="required section 'Skills'"):
         extract_cv(incomplete, required_sections=("Skills",))
 

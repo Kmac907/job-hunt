@@ -14,7 +14,7 @@ from zipfile import BadZipFile, ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import CandidateProfile, ProfileEvidenceKind, SupportedInterval
+from .models import CandidateProfile, ProfileDate, ProfileEvidenceKind, SupportedInterval
 
 
 class ExtractionReviewError(ValueError):
@@ -102,8 +102,10 @@ def _snapshot(
     issues = []
     if not normalized:
         issues.append("no readable text was found; provide a text-based CV instead of an image-only file")
+    lines = normalized.splitlines()
     for section in required_sections:
-        if section.casefold() not in normalized.casefold():
+        heading = re.compile(rf"^(?:#+\s*)?{re.escape(section)}\s*(?::.*)?$", re.IGNORECASE)
+        if not any(heading.fullmatch(line) for line in lines):
             issues.append(f"required section {section!r} was not found")
     if "\ufffd" in normalized or any(ord(char) < 32 and char not in "\n\t" for char in normalized):
         issues.append("text decoding or reading order is unreliable; review the extracted text")
@@ -204,7 +206,8 @@ def _docx_blocks(raw: bytes) -> list[SourceBlock]:
         raise ValueError("document body is missing")
     blocks: list[SourceBlock] = []
     paragraph = table = 0
-    for child in body:
+    def visit(child: ElementTree.Element) -> None:
+        nonlocal paragraph, table
         if child.tag == f"{ns}p":
             paragraph += 1
             text = paragraph_text(child)
@@ -238,13 +241,29 @@ def _docx_blocks(raw: bytes) -> list[SourceBlock]:
                                 text=text,
                             )
                         )
+        elif child.tag == f"{ns}sdt":
+            content = child.find(f"{ns}sdtContent")
+            if content is not None:
+                for item in content:
+                    visit(item)
+
+    for child in body:
+        visit(child)
     return blocks
 
 
 _PDF_OBJECT = re.compile(rb"(?m)^\s*(\d+)\s+\d+\s+obj\b(.*?)\bendobj\b", re.DOTALL)
 _PDF_REF = re.compile(rb"(\d+)\s+\d+\s+R")
 _PDF_STRING = rb"\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f\s]+>"
-_PDF_SHOW = re.compile(rb"(" + _PDF_STRING + rb")\s*(?:Tj|'|\")|\[(.*?)\]\s*TJ", re.DOTALL)
+_PDF_NUMBER = rb"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+_PDF_EVENT = re.compile(
+    rb"/(?P<font>[^\s/<>()\[\]]+)\s+" + _PDF_NUMBER + rb"\s+Tf"
+    rb"|(?P<single>" + _PDF_STRING + rb")\s*(?:Tj|'|\")"
+    rb"|\[(?P<array>.*?)\]\s*TJ"
+    rb"|(?P<tdx>" + _PDF_NUMBER + rb")\s+(?P<tdy>" + _PDF_NUMBER + rb")\s+T[Dd]"
+    rb"|(?:" + _PDF_NUMBER + rb"\s+){4}(?P<tmx>" + _PDF_NUMBER + rb")\s+(?P<tmy>" + _PDF_NUMBER + rb")\s+Tm",
+    re.DOTALL,
+)
 
 
 def _pdf_blocks(raw: bytes) -> list[SourceBlock]:
@@ -258,6 +277,7 @@ def _pdf_blocks(raw: bytes) -> list[SourceBlock]:
     blocks: list[SourceBlock] = []
     for page_number, object_number in enumerate(page_numbers, 1):
         page = objects[object_number]
+        fonts = _pdf_fonts(page, objects)
         contents = re.search(rb"/Contents\s*(\[[^]]*\]|\d+\s+\d+\s+R)", page, re.DOTALL)
         streams = []
         if contents:
@@ -266,11 +286,8 @@ def _pdf_blocks(raw: bytes) -> list[SourceBlock]:
                 stream_match = re.search(rb"stream\r?\n(.*?)\r?\nendstream", stream_object, re.DOTALL)
                 if not stream_match:
                     continue
-                stream = stream_match.group(1)
-                if b"/FlateDecode" in stream_object[: stream_match.start()]:
-                    stream = zlib.decompress(stream)
-                streams.append(stream)
-        text = _normalized(" ".join(_pdf_text(stream) for stream in streams))
+                streams.append(_pdf_stream(stream_object, stream_match))
+        text = _normalized(" ".join(_pdf_text(stream, fonts) for stream in streams))
         if not text:
             raise ExtractionReviewError(
                 f"PDF page {page_number} has no readable text and may be image-only; provide a text-based PDF"
@@ -316,17 +333,145 @@ def _pdf_page_order(objects: dict[int, bytes], pages: set[int]) -> list[int]:
     return list(pages)
 
 
-def _pdf_text(stream: bytes) -> str:
+def _pdf_stream(value: bytes, match: re.Match[bytes] | None = None) -> bytes:
+    match = match or re.search(rb"stream\r?\n(.*?)\r?\nendstream", value, re.DOTALL)
+    if not match:
+        raise ValueError("referenced PDF stream is missing")
+    stream = match.group(1)
+    return zlib.decompress(stream) if b"/FlateDecode" in value[: match.start()] else stream
+
+
+def _pdf_fonts(page: bytes, objects: dict[int, bytes]) -> dict[bytes, tuple[dict[bytes, str] | None, str]]:
+    resource = page
+    seen: set[int] = set()
+    while not re.search(rb"/Resources\b", resource):
+        parent = re.search(rb"/Parent\s+(\d+)\s+\d+\s+R", resource)
+        if not parent or int(parent.group(1)) in seen:
+            return {}
+        number = int(parent.group(1))
+        seen.add(number)
+        resource = objects.get(number, b"")
+    reference = re.search(rb"/Resources\s+(\d+)\s+\d+\s+R", resource)
+    if reference:
+        resource = objects.get(int(reference.group(1)), b"")
+    font_section = re.search(rb"/Font\s*<<(.*?)>>", resource, re.DOTALL)
+    if font_section:
+        font_resources = font_section.group(1)
+    else:
+        font_reference = re.search(rb"/Font\s+(\d+)\s+\d+\s+R", resource)
+        if not font_reference:
+            return {}
+        font_resources = objects.get(int(font_reference.group(1)), b"")
+    fonts: dict[bytes, tuple[dict[bytes, str] | None, str]] = {}
+    for name, reference in re.findall(rb"/([^\s/<>()\[\]]+)\s+(\d+)\s+\d+\s+R", font_resources):
+        font = objects.get(int(reference), b"")
+        cmap_ref = re.search(rb"/ToUnicode\s+(\d+)\s+\d+\s+R", font)
+        if cmap_ref:
+            cmap_object = objects.get(int(cmap_ref.group(1)), b"")
+            fonts[name] = (_pdf_cmap(_pdf_stream(cmap_object)), "")
+            continue
+        encoding_source = font
+        encoding_ref = re.search(rb"/Encoding\s+(\d+)\s+\d+\s+R", font)
+        if encoding_ref:
+            encoding_source = objects.get(int(encoding_ref.group(1)), b"")
+        encoding = re.search(
+            rb"/BaseEncoding\s*/([^\s/<>()\[\]]+)|/Encoding\s*/([^\s/<>()\[\]]+)",
+            encoding_source,
+        )
+        encoding_name = next((part.decode("ascii") for part in encoding.groups() if part), "StandardEncoding") if encoding else "StandardEncoding"
+        codecs = {"WinAnsiEncoding": "cp1252", "MacRomanEncoding": "mac_roman", "StandardEncoding": "cp1252"}
+        if encoding_name not in codecs:
+            raise ExtractionReviewError(
+                f"PDF font {name.decode('ascii', 'replace')!r} uses unsupported encoding {encoding_name!r}; export a new text-based PDF"
+            )
+        mapping = None
+        differences = re.search(rb"/Differences\s*\[(.*?)\]", encoding_source, re.DOTALL)
+        if differences:
+            mapping = {}
+            for value in range(256):
+                try:
+                    mapping[bytes([value])] = bytes([value]).decode(codecs[encoding_name])
+                except UnicodeDecodeError:
+                    pass
+            code: int | None = None
+            for item in re.findall(rb"\d+|/[^\s/<>()\[\]]+", differences.group(1)):
+                if item.isdigit():
+                    code = int(item)
+                elif code is not None and code < 256:
+                    mapping[bytes([code])] = _pdf_glyph(item[1:].decode("ascii"))
+                    code += 1
+        fonts[name] = (mapping, codecs[encoding_name])
+    return fonts
+
+
+def _pdf_glyph(name: str) -> str:
+    names = {"space": " ", "hyphen": "-", "period": ".", "comma": ",", "colon": ":", "semicolon": ";"}
+    if name in names:
+        return names[name]
+    if len(name) == 1:
+        return name
+    match = re.fullmatch(r"(?:uni|u)([0-9A-Fa-f]{4,6})", name)
+    if match:
+        return chr(int(match.group(1), 16))
+    raise ExtractionReviewError(f"PDF font glyph {name!r} cannot be decoded reliably; export a new text-based PDF")
+
+
+def _pdf_cmap(stream: bytes) -> dict[bytes, str]:
+    mapping: dict[bytes, str] = {}
+
+    def decoded(token: bytes) -> str:
+        value = bytes.fromhex(token.decode("ascii"))
+        return value.decode("utf-16") if value.startswith((b"\xfe\xff", b"\xff\xfe")) else value.decode("utf-16-be")
+
+    for section in re.findall(rb"beginbfchar(.*?)endbfchar", stream, re.DOTALL):
+        for source, target in re.findall(rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", section):
+            mapping[bytes.fromhex(source.decode("ascii"))] = decoded(target)
+    for section in re.findall(rb"beginbfrange(.*?)endbfrange", stream, re.DOTALL):
+        for row in section.splitlines():
+            parts = re.match(rb"\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(.*)", row)
+            if not parts:
+                continue
+            first = bytes.fromhex(parts.group(1).decode("ascii"))
+            last = bytes.fromhex(parts.group(2).decode("ascii"))
+            targets = re.findall(rb"<([0-9A-Fa-f]+)>", parts.group(3))
+            if not targets:
+                continue
+            for offset, code in enumerate(range(int.from_bytes(first, "big"), int.from_bytes(last, "big") + 1)):
+                target = targets[offset] if len(targets) > 1 else (int(targets[0], 16) + offset).to_bytes(len(targets[0]) // 2, "big").hex().encode()
+                mapping[code.to_bytes(len(first), "big")] = decoded(target)
+    if not mapping:
+        raise ExtractionReviewError("PDF ToUnicode map is unreadable; export a new text-based PDF")
+    return mapping
+
+
+def _pdf_text(stream: bytes, fonts: dict[bytes, tuple[dict[bytes, str] | None, str]] | None = None) -> str:
     values: list[str] = []
-    for match in _PDF_SHOW.finditer(stream):
-        if match.group(1):
-            values.append(_decode_pdf_string(match.group(1)))
+    fonts = fonts or {}
+    font: tuple[dict[bytes, str] | None, str] | None = None
+    x = y = 0.0
+    previous: tuple[float, float] | None = None
+    for match in _PDF_EVENT.finditer(stream):
+        if match.group("font"):
+            if match.group("font") not in fonts:
+                raise ExtractionReviewError("PDF text references an unresolved font; export a new text-based PDF")
+            font = fonts[match.group("font")]
+        elif match.group("tdx"):
+            x += float(match.group("tdx"))
+            y += float(match.group("tdy"))
+        elif match.group("tmx"):
+            x, y = float(match.group("tmx")), float(match.group("tmy"))
         else:
-            values.append("".join(_decode_pdf_string(item) for item in re.findall(_PDF_STRING, match.group(2) or b"")))
+            if previous is not None and y == previous[1] and x < previous[0]:
+                raise ExtractionReviewError("PDF text positioning makes reading order unreliable; export a linearized text-based PDF")
+            previous = (x, y)
+            if match.group("single"):
+                values.append(_decode_pdf_string(match.group("single"), font))
+            else:
+                values.append("".join(_decode_pdf_string(item, font) for item in re.findall(_PDF_STRING, match.group("array") or b"")))
     return " ".join(value for value in values if value)
 
 
-def _decode_pdf_string(token: bytes) -> str:
+def _decode_pdf_string(token: bytes, font: tuple[dict[bytes, str] | None, str] | None = None) -> str:
     if token.startswith(b"<"):
         value = bytes.fromhex(re.sub(rb"\s", b"", token[1:-1]).decode("ascii"))
     else:
@@ -352,6 +497,19 @@ def _decode_pdf_string(token: bytes) -> str:
                 output.append(escapes.get(source[index], source[index]))
                 index += 1
         value = bytes(output)
+    if font:
+        mapping, codec = font
+        if mapping is None:
+            return value.decode(codec)
+        result = []
+        sizes = sorted({len(key) for key in mapping}, reverse=True)
+        while value:
+            key = next((value[:size] for size in sizes if value[:size] in mapping), None)
+            if key is None:
+                raise ExtractionReviewError("PDF font map does not cover all displayed text; export a new text-based PDF")
+            result.append(mapping[key])
+            value = value[len(key) :]
+        return "".join(result)
     if value.startswith((b"\xfe\xff", b"\xff\xfe")):
         return value.decode("utf-16")
     return value.decode("cp1252")
@@ -366,6 +524,35 @@ def profile_hash(profile: CandidateProfile) -> str:
         separators=(",", ":"),
     )
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _date_is_grounded(profile_date: ProfileDate, text: str) -> bool:
+    year = str(profile_date.value.year)
+    if profile_date.precision.value == "year":
+        return re.search(rf"(?<!\d){year}(?!\d)", text) is not None
+    month = profile_date.value.month
+    month_name = profile_date.value.strftime("%B")
+    month_short = profile_date.value.strftime("%b")
+    if profile_date.precision.value == "month":
+        patterns = (
+            rf"\b(?:{month_name}|{month_short})\.?\s+{year}\b",
+            rf"(?<!\d){year}[-/.]0?{month}(?!\d)",
+            rf"(?<!\d)0?{month}[-/.]{year}(?!\d)",
+        )
+    else:
+        day = profile_date.value.day
+        patterns = (
+            rf"\b(?:{month_name}|{month_short})\.?\s+0?{day}(?:st|nd|rd|th)?[,]?\s+{year}\b",
+            rf"(?<!\d)0?{day}\s+(?:{month_name}|{month_short})\.?\s+{year}\b",
+            rf"(?<!\d){year}[-/.]0?{month}[-/.]0?{day}(?!\d)",
+            rf"(?<!\d)0?{month}[-/.]0?{day}[-/.]{year}(?!\d)",
+        )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _wording_is_grounded(wording: str, text: str) -> bool:
+    normalized = _normalized(wording)
+    return bool(normalized and re.search(rf"(?<!\w){re.escape(normalized)}(?!\w)", text, re.IGNORECASE))
 
 
 def approve_profile(extraction: CVExtraction, profile: CandidateProfile) -> ProfileApproval:
@@ -393,11 +580,42 @@ def approve_profile(extraction: CVExtraction, profile: CandidateProfile) -> Prof
             if item.matching_credit:
                 extraction.resolve_quote(source_id, item.wording)
     for interval in profile.experience_intervals:
-        for source_id in interval.source_ids:
-            extraction.resolve_source(source_id)
+        source_text = "\n".join(extraction.resolve_source(source_id).text for source_id in interval.source_ids)
+        if not _date_is_grounded(interval.start, source_text):
+            raise ValueError("experience interval start date is not present in its CV sources")
+        if interval.present:
+            if not re.search(r"\b(?:present|current(?:ly)?)\b", source_text, re.IGNORECASE):
+                raise ValueError("Present experience interval is not present in its CV sources")
+        elif interval.end is not None and not _date_is_grounded(interval.end, source_text):
+            raise ValueError("experience interval end date is not present in its CV sources")
+        if interval.capability and not _wording_is_grounded(interval.capability, source_text):
+            raise ValueError("experience interval capability is not present in its CV sources")
     for qualification in profile.qualifications:
+        source_text = "\n".join(
+            extraction.resolve_source(source_id).text for source_id in qualification.source_ids
+        )
         for source_id in qualification.source_ids:
             extraction.resolve_quote(source_id, qualification.original_title)
+        state_markers = {
+            "completed": r"\b(?:completed|certified|earned|graduated|awarded|conferred|obtained)\b",
+            "in_progress": r"\b(?:in[ -]progress|ongoing|currently|pursuing|studying|enrolled|candidate)\b",
+        }
+        marker = state_markers.get(qualification.state.value)
+        negated = re.search(
+            r"\b(?:not|never)\s+(?:completed|certified|earned|graduated|awarded|conferred|obtained)\b",
+            source_text,
+            re.IGNORECASE,
+        )
+        if marker and (not re.search(marker, source_text, re.IGNORECASE) or negated):
+            raise ValueError(f"qualification state {qualification.state.value!r} is not present in its CV sources")
+    if profile.experience_years is not None:
+        years = format(profile.experience_years, "g")
+        if not re.search(
+            rf"(?<![\d.]){re.escape(years)}(?:\.0+)?\s*\+?\s*(?:years?|yrs?)\b",
+            extraction.normalized_text,
+            re.IGNORECASE,
+        ):
+            raise ValueError("experience_years is not explicitly supported by the CV")
     listed_skills = {
         _normalized(item.wording).casefold()
         for item in profile.evidence

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from job_hunt.cv import (
     extract_cv,
     merge_profiles,
 )
-from job_hunt.models import CandidateProfile, ProfileEvidence, Qualification
+from job_hunt.models import CandidateProfile, ProfileDate, ProfileEvidence, Qualification, SupportedInterval
 
 
 def profile_for(snapshot: CVExtraction, **changes) -> CandidateProfile:
@@ -120,6 +121,55 @@ def test_approval_requires_the_snapshot_text_and_grounded_profile_fields(tmp_pat
     )
     with pytest.raises(ValueError, match="quote is not present"):
         approve_profile(snapshot, profile_for(snapshot, qualifications=[bad_qualification]))
+
+
+def test_approval_rejects_unsupported_duration_and_qualification_state(tmp_path: Path) -> None:
+    path = tmp_path / "cv.txt"
+    path.write_text(
+        "Skills\nBuilt Python APIs\nQualifications\nAWS course (in progress)", encoding="utf-8"
+    )
+    snapshot = extract_cv(path)
+    interval = SupportedInterval(
+        start=ProfileDate(value=date(2000, 1, 1), precision="day"),
+        end=ProfileDate(value=date(2020, 1, 1), precision="day"),
+        source_ids=[snapshot.blocks[0].source_id],
+    )
+
+    with pytest.raises(ValueError, match="start date"):
+        approve_profile(snapshot, profile_for(snapshot, experience_intervals=[interval]))
+    with pytest.raises(ValueError, match="qualification state"):
+        approve_profile(
+            snapshot,
+            profile_for(
+                snapshot,
+                qualifications=[
+                    Qualification(
+                        original_title="AWS course",
+                        state="completed",
+                        source_ids=[snapshot.blocks[0].source_id],
+                    )
+                ],
+            ),
+        )
+    with pytest.raises(ValueError, match="experience_years"):
+        approve_profile(snapshot, profile_for(snapshot, experience_years=99))
+
+
+def test_approval_accepts_source_grounded_interval(tmp_path: Path) -> None:
+    path = tmp_path / "cv.txt"
+    path.write_text(
+        "Skills\nBuilt Python APIs\nExperience\nPython developer, Jan 2020 - Present\nQualifications\nAWS course (in progress)",
+        encoding="utf-8",
+    )
+    snapshot = extract_cv(path)
+    interval = SupportedInterval(
+        start=ProfileDate(value=date(2020, 1, 1), precision="month"),
+        present=True,
+        capability="Python",
+        source_ids=[snapshot.blocks[0].source_id],
+    )
+
+    approve_profile(snapshot, profile_for(snapshot, experience_intervals=[interval]))
 
 
 def test_unverified_inferences_cannot_smuggle_in_matching_interpretations() -> None:

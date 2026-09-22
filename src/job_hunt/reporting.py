@@ -205,7 +205,10 @@ def write_reports(snapshot: ReportSnapshot, output_dir: str | Path) -> dict[str,
 def regenerate_reports(saved_snapshot: str | Path, output_dir: str | Path) -> dict[str, Path]:
     """Regenerate views from a persisted snapshot, with no model or network dependency."""
 
-    data = json.loads(Path(saved_snapshot).read_text(encoding="utf-8"))
+    saved = Path(saved_snapshot)
+    if saved.resolve() == (Path(output_dir) / "report.json").resolve():
+        raise ValueError("saved snapshot must not be the output report.json")
+    data = json.loads(saved.read_text(encoding="utf-8"))
     return write_reports(ReportSnapshot.model_validate(data), output_dir)
 
 

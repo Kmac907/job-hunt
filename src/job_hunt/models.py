@@ -370,7 +370,7 @@ class ReportJobRecord(Contract):
     available: bool | None = None
     source_record_ids: list[str] = Field(min_length=1)
     reason: str = ""
-    validated: Literal[True] = True
+    validated: Literal[True]
 
     @model_validator(mode="after")
     def consistent_references(self) -> "ReportJobRecord":

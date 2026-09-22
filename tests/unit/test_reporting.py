@@ -67,6 +67,7 @@ def saved_job(
         available=True,
         source_record_ids=[f"jobs/{job_id}/1", f"assessments/{job_id}/1"],
         reason="not evidenced" if score is None else "validated result",
+        validated=True,
     )
 
 
@@ -157,6 +158,26 @@ def test_reports_regenerate_from_saved_snapshot_only(tmp_path: Path) -> None:
     assert {name: path.read_bytes() for name, path in first.items()} == {
         name: path.read_bytes() for name, path in second.items()
     }
+
+
+def test_regeneration_does_not_overwrite_its_saved_snapshot(tmp_path: Path) -> None:
+    saved = tmp_path / "report.json"
+    original = snapshot().model_dump_json(indent=2)
+    saved.write_text(original, encoding="utf-8")
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="saved snapshot"):
+            regenerate_reports(saved, tmp_path)
+
+    assert saved.read_text(encoding="utf-8") == original
+
+
+def test_saved_jobs_require_explicit_validation_marker() -> None:
+    report = snapshot().model_dump(mode="json")
+    del report["jobs"][0]["validated"]
+
+    with pytest.raises(ValidationError, match="validated"):
+        ReportSnapshot.model_validate(report)
 
 
 def test_coverage_rejects_non_reconciling_or_unbounded_completion() -> None:

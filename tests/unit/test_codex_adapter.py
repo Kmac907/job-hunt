@@ -39,10 +39,24 @@ def test_operations_use_scoped_stdin_and_structured_output() -> None:
                 "required": ["Python"],
                 "preferred": [],
                 "responsibilities": ["Build APIs"],
+                "eligibility": [],
             },
             {
                 "scores": {"requirements": 1, "preferences": 0, "company": 0},
                 "total_score": 0.6,
+                "requirement_assessments": [
+                    {
+                        "requirement_id": "req-39e520af7254",
+                        "classification": "fully_supported",
+                        "evidence": [{"source_id": "resume", "quote": "Python"}],
+                        "supported_portions": ["Python"],
+                    },
+                    {
+                        "requirement_id": "req-ee1ecee8de53",
+                        "classification": "not_evidenced",
+                        "missing_portions": ["Build APIs"],
+                    },
+                ],
                 "matched_requirements": ["Python"],
                 "gaps": [],
                 "rationale": "Python is present in the approved profile.",
@@ -97,6 +111,7 @@ def test_invalid_schema_and_evidence_are_rejected() -> None:
                 "required": ["Rust"],
                 "preferred": [],
                 "responsibilities": [],
+                "eligibility": [],
             }
         ]
     )
@@ -109,6 +124,7 @@ def test_invalid_schema_and_evidence_are_rejected() -> None:
             {
                 "scores": {"requirements": 0, "preferences": 0, "company": 0},
                 "total_score": 0,
+                "requirement_assessments": [],
                 "matched_requirements": ["Rust"],
                 "gaps": [],
                 "rationale": "No match",

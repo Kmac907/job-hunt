@@ -13,7 +13,17 @@ from typing import Any, Callable, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .models import Assessment, CandidateProfile, JobPosting, RequirementSet, ScoreBreakdown
+from .models import (
+    Assessment,
+    CandidateProfile,
+    JobPosting,
+    RequirementAssessment,
+    RequirementCategory,
+    RequirementRecord,
+    RequirementSet,
+    ScoreBreakdown,
+    stable_requirement_id,
+)
 
 RECURSION_GUARD = "JOB_HUNT_CODEX_ACTIVE"
 MAX_ATTEMPTS = 2
@@ -51,12 +61,14 @@ class _RequirementOutput(BaseModel):
     required: list[str]
     preferred: list[str]
     responsibilities: list[str]
+    eligibility: list[str]
 
 
 class _AssessmentOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scores: ScoreBreakdown
     total_score: float = Field(ge=0, le=1)
+    requirement_assessments: list[RequirementAssessment]
     matched_requirements: list[str]
     gaps: list[str]
     rationale: str
@@ -96,13 +108,16 @@ _CANDIDATE = _Operation(
 _REQUIREMENTS = _Operation(
     "requirement_extraction",
     "Extract requirements from this job posting only. Every list item must be an exact, "
-    "self-contained excerpt from the posting description.",
+    "self-contained excerpt from the posting description. Put mandatory clearance, background "
+    "check, location, and work-authorization conditions in eligibility.",
     _RequirementOutput,
 )
 _ASSESSMENT = _Operation(
     "profile_assessment",
-    "Assess the approved candidate profile only against the supplied requirements. Every matched "
-    "requirement and gap must exactly equal one supplied required or preferred item.",
+    "Assess the approved candidate profile only against the supplied requirements. Return exactly "
+    "one requirement_assessment for every supplied requirement_id, using only quoted profile "
+    "evidence and its source_id. Every matched requirement and gap must exactly equal one supplied "
+    "required, preferred, responsibility, or eligibility item.",
     _AssessmentOutput,
 )
 
@@ -155,7 +170,18 @@ class CodexAdapter:
     def extract_requirements(self, posting: JobPosting) -> RequirementSet:
         output = self._invoke(_REQUIREMENTS, posting.model_dump(mode="json"))
         self._validate_posting_evidence(output, posting.description)
-        return RequirementSet(job_id=posting.job_id, **output.model_dump())
+        data = output.model_dump(exclude={"eligibility"})
+        data["requirements"] = [
+            RequirementRecord(
+                requirement_id=stable_requirement_id(RequirementCategory.ELIGIBILITY, text),
+                category=RequirementCategory.ELIGIBILITY,
+                text=text,
+                source_passage=text,
+                mandatory=True,
+            )
+            for text in output.eligibility
+        ]
+        return RequirementSet(job_id=posting.job_id, **data)
 
     def assess(self, profile: CandidateProfile, requirements: RequirementSet) -> Assessment:
         output = self._invoke(
@@ -165,7 +191,9 @@ class CodexAdapter:
                 "requirements": requirements.model_dump(mode="json"),
             },
         )
-        allowed = set(requirements.required + requirements.preferred)
+        allowed = {
+            item.text for item in requirements.requirements
+        }
         references = output.matched_requirements + output.gaps
         invalid = [item for item in references if item not in allowed]
         if invalid or set(output.matched_requirements) & set(output.gaps):
@@ -313,7 +341,7 @@ class CodexAdapter:
 
     @staticmethod
     def _validate_posting_evidence(output: _RequirementOutput, source: str) -> None:
-        evidence = output.required + output.preferred + output.responsibilities
+        evidence = output.required + output.preferred + output.responsibilities + output.eligibility
         if any(item.casefold() not in source.casefold() for item in evidence):
             raise CodexAdapterError("Codex response contains unsupported posting evidence")
 

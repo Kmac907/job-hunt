@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,7 +22,7 @@ from .cv import (
     extract_cv,
     profile_hash,
 )
-from .filters import disposition_for
+from .filters import EligibilityResult, TruthValue, disposition_for, evaluate_logic
 from .models import (
     Assessment,
     CandidateProfile,
@@ -32,6 +33,7 @@ from .models import (
     ProfileEvidenceKind,
     ReportJobRecord,
     ReportSnapshot,
+    RequirementCategory,
     RequirementSet,
     RunManifest,
     RunStatus,
@@ -67,6 +69,11 @@ class Pipeline:
     def run(self) -> RunManifest:
         config, companies = self._preflight()
         fixture = self._fixture_path(required=True)
+        try:
+            fixture_bytes = fixture.read_bytes()
+        except OSError as exc:
+            raise PipelineError(f"cannot read saved job fixture {fixture}: {exc}") from exc
+        fixture_hash = sha256(fixture_bytes).hexdigest()
         now = datetime.now(ZoneInfo(config.timezone))
         run_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
         run_dir = self._run_dir(run_id)
@@ -78,6 +85,7 @@ class Pipeline:
             effective_config={
                 **config.snapshot(companies),
                 "jobs_fixture": str(fixture.relative_to(self.base).as_posix()),
+                "jobs_fixture_sha256": fixture_hash,
                 "mode": "offline_saved_fixtures",
             },
             status=RunStatus.RUNNING,
@@ -86,6 +94,7 @@ class Pipeline:
             model=config.runtime.model or "",
         )
         with self.storage.run_lock():
+            (run_dir / "jobs-fixture.json").write_bytes(fixture_bytes)
             self.storage.save_manifest(manifest)
             extraction = extract_cv(self._resume_path(config))
             profile = self._profile(extraction, config)
@@ -111,10 +120,10 @@ class Pipeline:
     def approve_profile(
         self, run_id: str, profile_version: str | None = None
     ) -> ProfileApproval:
-        config, _ = self._preflight()
         run_dir = self._run_dir(run_id, must_exist=True)
         with self.storage.run_lock():
             manifest = self.storage.load_manifest(run_id)
+            config = self._manifest_config(manifest)
             extraction = CVExtraction.model_validate(self._read(run_dir / "cv-extraction.json"))
             profile = CandidateProfile.model_validate(self._read(run_dir / "profile.json"))
             version = profile_hash(profile)
@@ -140,10 +149,10 @@ class Pipeline:
         return approval
 
     def resume(self, run_id: str) -> RunManifest:
-        config, _ = self._preflight()
         run_dir = self._run_dir(run_id, must_exist=True)
         with self.storage.run_lock():
             manifest = self.storage.load_manifest(run_id)
+            config = self._manifest_config(manifest)
             if manifest.status == RunStatus.COMPLETED:
                 return manifest
             extraction = CVExtraction.model_validate(self._read(run_dir / "cv-extraction.json"))
@@ -196,8 +205,17 @@ class Pipeline:
         approval: ProfileApproval,
         extraction: CVExtraction,
     ) -> None:
-        fixture_path = self._fixture_path(manifest=manifest, required=True)
-        fixture = self._load_fixture(fixture_path)
+        fixture_path = run_dir / "jobs-fixture.json"
+        try:
+            fixture_hash = sha256(fixture_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise PipelineError(f"cannot read saved job fixture snapshot {fixture_path}: {exc}") from exc
+        if fixture_hash != manifest.effective_config.get("jobs_fixture_sha256"):
+            raise PipelineError("saved job fixture snapshot no longer matches the run manifest")
+        fixture = self._load_fixture(
+            fixture_path,
+            source_name=Path(str(manifest.effective_config["jobs_fixture"])).name,
+        )
         adapter = self.adapter or CodexAdapter(
             config.runtime.model or "", timeout_seconds=config.runtime.timeout_seconds
         )
@@ -270,17 +288,19 @@ class Pipeline:
                     }
                 )
 
+            eligibility = self._eligibility(requirements, assessment)
             disposition = disposition_for(
-                "true",
+                eligibility,
                 score.total_score if score else None,
                 config.match_threshold,
                 assessment_complete=assessment is not None,
             )
-            reason = error or (
-                "meets saved-fixture match threshold"
-                if disposition == Disposition.SHORTLISTED
-                else "below saved-fixture match threshold"
-            )
+            reason = error or {
+                Disposition.EXCLUDED: "failed mandatory eligibility",
+                Disposition.NEEDS_REVIEW: "mandatory eligibility needs review",
+                Disposition.SHORTLISTED: "meets saved-fixture match threshold",
+                Disposition.BELOW_THRESHOLD: "below saved-fixture match threshold",
+            }.get(disposition, "assessment unavailable")
             records.append(
                 ReportJobRecord(
                     run_id=manifest.run_id,
@@ -292,8 +312,8 @@ class Pipeline:
                     raw_score=score.total_score if score else None,
                     rounded_score=score.score if score else None,
                     threshold=config.match_threshold,
-                    eligibility="true",
-                    gates={},
+                    eligibility=eligibility.state,
+                    gates=eligibility.gates,
                     original_date_verified=False,
                     available=None,
                     source_record_ids=[
@@ -403,7 +423,7 @@ class Pipeline:
             }
         )
 
-    def _load_fixture(self, path: Path) -> dict[str, Any]:
+    def _load_fixture(self, path: Path, *, source_name: str | None = None) -> dict[str, Any]:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -426,7 +446,10 @@ class Pipeline:
                     {
                         "job": posting,
                         "source_record_id": str(
-                            wrapper.get("source_record_id", f"fixture/{path.name}#{index + 1}")
+                            wrapper.get(
+                                "source_record_id",
+                                f"fixture/{source_name or path.name}#{index + 1}",
+                            )
                         ),
                     }
                 )
@@ -452,15 +475,49 @@ class Pipeline:
         self.config = config
         return config, companies
 
+    @staticmethod
+    def _manifest_config(manifest: RunManifest) -> AppConfig:
+        try:
+            return AppConfig.model_validate(
+                {
+                    name: manifest.effective_config[name]
+                    for name in AppConfig.model_fields
+                }
+            )
+        except (KeyError, ValidationError) as exc:
+            raise PipelineError(f"run manifest has an invalid configuration snapshot: {exc}") from exc
+
+    @staticmethod
+    def _eligibility(
+        requirements: RequirementSet | None, assessment: Assessment | None
+    ) -> EligibilityResult:
+        if requirements is None or assessment is None:
+            return EligibilityResult(state=TruthValue.UNKNOWN, gates={})
+        classifications = {
+            item.requirement_id: item.classification.value
+            for item in assessment.requirement_assessments
+        }
+        values = {
+            "fully_supported": TruthValue.TRUE,
+            "contradicted": TruthValue.FALSE,
+            "partially_supported": TruthValue.UNKNOWN,
+            "not_evidenced": TruthValue.UNKNOWN,
+        }
+        gates = {
+            item.requirement_id: values[classifications[item.requirement_id]]
+            for item in requirements.requirements
+            if item.category == RequirementCategory.ELIGIBILITY and item.mandatory
+        }
+        return EligibilityResult(
+            state=evaluate_logic("ALL", gates.values()) if gates else TruthValue.TRUE,
+            gates=gates,
+        )
+
     def _resume_path(self, config: AppConfig) -> Path:
         return resolve_safe(self.base, config.resume_path, "resume")
 
-    def _fixture_path(
-        self, *, manifest: RunManifest | None = None, required: bool = False
-    ) -> Path:
+    def _fixture_path(self, *, required: bool = False) -> Path:
         value: str | Path | None = self.jobs_path
-        if value is None and manifest is not None:
-            value = manifest.effective_config.get("jobs_fixture")
         if value is None:
             for candidate in ("jobs.json", "fixtures/jobs.json", "tests/fixtures/offline/jobs.json"):
                 if (self.base / candidate).is_file():

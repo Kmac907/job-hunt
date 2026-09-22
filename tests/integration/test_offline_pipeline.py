@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from job_hunt.models import Assessment, CandidateProfile, RequirementRecord, RequirementSet
+from job_hunt.models import (
+    Assessment,
+    CandidateProfile,
+    RequirementRecord,
+    RequirementSet,
+)
 from job_hunt.pipeline import Pipeline
 
 
@@ -145,3 +150,74 @@ def test_report_regenerates_from_saved_snapshot_only(tmp_path: Path) -> None:
     (tmp_path / "jobs.json").unlink()
     paths = Pipeline(tmp_path / "config.yaml").report(manifest.run_id, "regenerated")
     assert set(paths) == {"report.md", "report.csv", "report.json"}
+
+
+def test_resume_uses_snapshotted_fixture_and_config(tmp_path: Path) -> None:
+    config, jobs = workspace(tmp_path)
+    pipeline = Pipeline(config, jobs, adapter=FakeAdapter())
+    paused = pipeline.run()
+    pipeline.approve_profile(paused.run_id, paused.output_metadata["profile_version"])
+    jobs.write_text('{"jobs": []}', encoding="utf-8")
+    config.write_text(
+        config.read_text(encoding="utf-8") + "match_threshold: 0.1\n",
+        encoding="utf-8",
+    )
+
+    manifest = Pipeline(config, jobs, adapter=FakeAdapter()).resume(paused.run_id)
+    snapshot = json.loads(
+        (tmp_path / "runs/runs" / manifest.run_id / "report-snapshot.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snapshot["jobs"][0]["job"]["job_id"] == "acme-python"
+    assert snapshot["jobs"][0]["threshold"] == 0.85
+
+
+def test_mandatory_eligibility_is_not_shortlisted(tmp_path: Path) -> None:
+    class EligibilityAdapter(FakeAdapter):
+        def extract_requirements(self, posting) -> RequirementSet:
+            return RequirementSet(
+                job_id=posting.job_id,
+                requirements=[
+                    RequirementRecord(
+                        requirement_id="python",
+                        category="required",
+                        text="Python",
+                        mandatory=True,
+                    ),
+                    RequirementRecord(
+                        requirement_id="authorization",
+                        category="eligibility",
+                        text="Must be authorized",
+                        mandatory=True,
+                    ),
+                ],
+            )
+
+        def assess(self, profile, requirements) -> Assessment:
+            return Assessment.model_validate(
+                {
+                    "candidate_id": profile.candidate_id,
+                    "job_id": requirements.job_id,
+                    "scores": {"requirements": 1, "preferences": 0, "company": 1},
+                    "requirement_assessments": [
+                        {
+                            "requirement_id": "python",
+                            "classification": "fully_supported",
+                            "evidence": [{"source_id": "resume", "quote": "Python"}],
+                            "supported_portions": ["Python"],
+                        },
+                        {
+                            "requirement_id": "authorization",
+                            "classification": "not_evidenced",
+                            "missing_portions": ["Must be authorized"],
+                        },
+                    ],
+                }
+            )
+
+    _, manifest = complete(tmp_path, EligibilityAdapter())
+    run = tmp_path / "runs/runs" / manifest.run_id
+    decision = json.loads((run / "decisions.json").read_text(encoding="utf-8"))["jobs"][0]
+    assert decision["disposition"] == "needs_review"
+    assert json.loads((run / "matches.json").read_text(encoding="utf-8"))["jobs"] == []

@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import tempfile
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -73,6 +74,38 @@ class Storage:
         if not isinstance(value, dict):
             raise StorageError(f"JSON file must contain an object: {path}")
         return value
+
+    def write_json(
+        self,
+        relative: str | Path,
+        value: BaseModel | dict[str, Any],
+        *,
+        replace: bool = True,
+    ) -> Path:
+        """Commit one JSON object without exposing a partially written destination."""
+        path = self.path(relative)
+        _atomic_json(path, value, replace=replace)
+        return path
+
+    def write_bytes(
+        self, relative: str | Path, content: str | bytes, *, replace: bool = True
+    ) -> Path:
+        path = self.path(relative)
+        _atomic_bytes(
+            path,
+            content.encode("utf-8") if isinstance(content, str) else content,
+            replace=replace,
+        )
+        return path
+
+    def read_cache(self, artifact: str, key: str) -> dict[str, Any] | None:
+        path = self.path(Path("cache") / _component(artifact) / f"{_component(key)}.json")
+        return None if not path.is_file() else self.read_json(path)
+
+    def write_cache(self, artifact: str, key: str, value: dict[str, Any]) -> Path:
+        path = self.path(Path("cache") / _component(artifact) / f"{_component(key)}.json")
+        _atomic_json(path, value, replace=True)
+        return path
 
     def save_manifest(self, manifest: RunManifest) -> Path:
         path = self.path(Path("runs") / _component(manifest.run_id) / "manifest.json")
@@ -218,7 +251,7 @@ def _atomic_bytes(path: Path, content: bytes, *, replace: bool) -> None:
         if replace:
             temporary = _temporary_file(path, content)
             try:
-                os.replace(temporary, path)
+                _replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
         elif not _atomic_create(path, content):
@@ -243,7 +276,9 @@ def _atomic_create(path: Path, content: bytes) -> bool:
 def _temporary_file(path: Path, content: bytes) -> Path:
     temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as stream:
             temporary = Path(stream.name)
             stream.write(content)
             stream.flush()
@@ -253,6 +288,18 @@ def _temporary_file(path: Path, content: bytes) -> Path:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
         raise
+
+
+def _replace(source: Path, destination: Path) -> None:
+    """Tolerate short-lived Windows file locks without making writes unbounded."""
+    for attempt in range(3):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _pid_exists(pid: int) -> bool:

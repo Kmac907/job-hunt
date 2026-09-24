@@ -282,6 +282,13 @@ def test_safe_client_distinguishes_non_default_ports_and_decodes_case_insensitiv
         SafeHttpClient(config, opener=FakeOpener([])).request("https://jobs.example:444/jobs/123")
 
 
+def test_origin_normalization_preserves_explicit_port_zero() -> None:
+    config = CollectorConfig(name="example", allowed_origins=["https://jobs.example:0"])
+    assert config.allowed_origins == ["https://jobs.example:0"]
+    with pytest.raises(UnsafeDestinationError):
+        SafeHttpClient(config, opener=FakeOpener([])).request("https://jobs.example/jobs/123")
+
+
 def test_collector_config_rejects_non_origins() -> None:
     for origin in (
         "http://jobs.example",

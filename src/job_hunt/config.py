@@ -76,7 +76,7 @@ def origin_for_url(value: str) -> str:
     parsed = urlsplit(value)
     try:
         host = parsed.hostname
-        port = parsed.port or 443
+        port = 443 if parsed.port is None else parsed.port
     except ValueError as exc:
         raise ValueError("collector origins must use a valid HTTPS host and port") from exc
     if parsed.scheme.casefold() != "https" or not host or parsed.username or parsed.password:

@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from ..config import CollectorConfig
+from ..config import CollectorConfig, normalize_origin, origin_for_url
 from ..models import (
     CollectorCoverage,
     CollectorStatus,
@@ -63,7 +63,9 @@ class HttpResponse:
     fetched_at: datetime
 
     def snapshot(self) -> RawSnapshot:
-        content_type = self.headers.get("Content-Type")
+        content_type = next(
+            (value for key, value in self.headers.items() if key.casefold() == "content-type"), None
+        )
         charset = "utf-8"
         if content_type:
             message = Message()
@@ -88,7 +90,7 @@ class SafeHttpClient:
 
     def __init__(self, config: CollectorConfig, *, opener=None) -> None:  # noqa: ANN001
         self.config = config
-        self._allowed_hosts = frozenset(host.casefold().rstrip(".") for host in config.allowed_hosts)
+        self._allowed_origins = frozenset(normalize_origin(origin) for origin in config.allowed_origins)
         self._credential_headers = frozenset(
             _SENSITIVE_HEADERS | {header.casefold() for header in config.credential_env}
         )
@@ -193,12 +195,15 @@ class SafeHttpClient:
             self._last_request = monotonic()
 
     def _validate_url(self, url: str) -> str:
-        parsed = urlsplit(url)
-        host = (parsed.hostname or "").casefold().rstrip(".")
-        if parsed.scheme != "https" or not host or parsed.username or parsed.password:
-            raise UnsafeDestinationError(f"unsafe portal destination: {url}")
-        if host not in self._allowed_hosts:
+        try:
+            origin = origin_for_url(url)
+        except ValueError as exc:
+            raise UnsafeDestinationError(f"unsafe portal destination: {url}") from exc
+        if origin not in self._allowed_origins:
+            host = (urlsplit(url).hostname or "").casefold().rstrip(".")
             raise UnsafeDestinationError(f"portal destination is not configured: {host}")
+        if urlsplit(url).fragment:
+            raise UnsafeDestinationError(f"unsafe portal destination: {url}")
         return url
 
 

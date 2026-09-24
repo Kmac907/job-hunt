@@ -72,13 +72,34 @@ class RuntimeConfig(BaseModel):
         return value
 
 
+def origin_for_url(value: str) -> str:
+    parsed = urlsplit(value)
+    try:
+        host = parsed.hostname
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("collector origins must use a valid HTTPS host and port") from exc
+    if parsed.scheme.casefold() != "https" or not host or parsed.username or parsed.password:
+        raise ValueError("collector origins must be HTTPS without credentials")
+    host = host.casefold().rstrip(".")
+    if ":" in host:
+        host = f"[{host}]"
+    return f"https://{host}" if port == 443 else f"https://{host}:{port}"
+
+
+def normalize_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("collector allowed_origins must not contain paths, queries, or fragments")
+    return origin_for_url(value)
+
+
 class CollectorConfig(BaseModel):
     """Network limits for one portal; secret values stay in environment variables."""
 
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1)
-    destinations: list[str] = Field(default_factory=list)
-    allowed_hosts: list[str] = Field(default_factory=list)
+    allowed_origins: list[str] = Field(default_factory=list)
     timeout_seconds: float = Field(default=30, gt=0, le=300)
     max_retries: int = Field(default=2, ge=0, le=5)
     max_redirects: int = Field(default=3, ge=0, le=10)
@@ -89,15 +110,9 @@ class CollectorConfig(BaseModel):
 
     @model_validator(mode="after")
     def configured_destinations(self) -> "CollectorConfig":
-        hosts = {host.casefold().rstrip(".") for host in self.allowed_hosts if host.strip()}
-        for destination in self.destinations:
-            parsed = urlsplit(destination)
-            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-                raise ValueError("collector destinations must be HTTPS origins without credentials")
-            hosts.add(parsed.hostname.casefold().rstrip("."))
-        if not hosts:
-            raise ValueError("collector requires at least one configured destination")
-        self.allowed_hosts = sorted(hosts)
+        if not self.allowed_origins:
+            raise ValueError("collector requires at least one configured origin")
+        self.allowed_origins = sorted({normalize_origin(origin) for origin in self.allowed_origins})
         return self
 
 

@@ -397,12 +397,12 @@ class VerifyResult(BaseModel):
     def availability_is_evidenced(self) -> "VerifyResult":
         if self.availability != AvailabilityStatus.UNKNOWN and not self.evidence:
             raise ValueError("open/closed availability requires evidence")
-        if self.status == CollectorStatus.SUCCESS and self.availability == AvailabilityStatus.UNKNOWN:
-            raise ValueError("successful verification must establish open or closed")
-        if self.status == CollectorStatus.SUCCESS:
+        if self.availability != AvailabilityStatus.UNKNOWN:
             hashes = {snapshot.sha256 for snapshot in self.snapshots}
             if not hashes or any(item.snapshot_sha256 not in hashes for item in self.evidence):
                 raise ValueError("verification evidence must reference its raw snapshots")
+        if self.status == CollectorStatus.SUCCESS and self.availability == AvailabilityStatus.UNKNOWN:
+            raise ValueError("successful verification must establish open or closed")
         if self.status in {CollectorStatus.BLOCKED, CollectorStatus.UNSUPPORTED, CollectorStatus.FAILED}:
             if not self.error:
                 raise ValueError(f"{self.status} verification requires an error")

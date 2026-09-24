@@ -144,6 +144,19 @@ def test_contract_preserves_identity_dates_snapshots_and_verification_evidence()
         VerifyResult(status="success", availability="closed")
     with pytest.raises(ValidationError, match="raw snapshot"):
         FetchResult(status="success", posting=item)
+    with pytest.raises(ValidationError, match="raw snapshots"):
+        VerifyResult(
+            status="partial",
+            availability="open",
+            evidence=[
+                CollectorEvidence(
+                    snapshot_sha256="0" * 64,
+                    source_url=raw.final_url,
+                    observed_at=NOW,
+                    detail="unmatched evidence",
+                )
+            ],
+        )
 
 
 def test_coverage_and_status_cannot_claim_unsupported_or_fabricated_success() -> None:
@@ -217,7 +230,7 @@ def test_safe_client_enforces_destinations_redirects_credentials_and_retry_bound
     monkeypatch.setattr("job_hunt.collectors.base.sleep", lambda _delay: None)
     config = CollectorConfig(
         name="example",
-        allowed_hosts=["jobs.example", "api.example"],
+        allowed_origins=["HTTPS://JOBS.EXAMPLE:443", "https://api.example"],
         timeout_seconds=7,
         max_retries=1,
         backoff_seconds=0,
@@ -251,3 +264,31 @@ def test_safe_client_enforces_destinations_redirects_credentials_and_retry_bound
     retried = FakeOpener([TimeoutError(), FakeResponse("https://jobs.example/123")])
     assert SafeHttpClient(config, opener=retried).request("https://jobs.example/123").status_code == 200
     assert len(retried.requests) == 2
+
+
+def test_safe_client_distinguishes_non_default_ports_and_decodes_case_insensitive_headers() -> None:
+    config = CollectorConfig(
+        name="example",
+        allowed_origins=["https://jobs.example", "https://jobs.example:8443"],
+        requests_per_second=100,
+    )
+    response = FakeResponse("https://jobs.example:8443/jobs/123", b"caf\xe9")
+    del response.headers["Content-Type"]
+    response.headers["cOnTeNt-TyPe"] = "text/plain; CHARSET=iso-8859-1"
+    opener = FakeOpener([response])
+    result = SafeHttpClient(config, opener=opener).request("https://jobs.example:8443/jobs/123").snapshot()
+    assert result.content == "café"
+    with pytest.raises(UnsafeDestinationError):
+        SafeHttpClient(config, opener=FakeOpener([])).request("https://jobs.example:444/jobs/123")
+
+
+def test_collector_config_rejects_non_origins() -> None:
+    for origin in (
+        "http://jobs.example",
+        "https://user:secret@jobs.example",
+        "https://jobs.example/jobs",
+        "https://jobs.example?query=1",
+        "https://jobs.example#fragment",
+    ):
+        with pytest.raises(ValidationError):
+            CollectorConfig(name="example", allowed_origins=[origin])

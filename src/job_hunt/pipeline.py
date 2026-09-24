@@ -113,6 +113,7 @@ class Pipeline:
             self.storage.write_bytes(run_dir / "jobs-fixture.json", fixture_bytes, replace=False)
             self.storage.save_manifest(manifest)
             metrics = self._new_metrics(config)
+            started = time.monotonic()
             failures_before = metrics["failures"]["total"]
             try:
                 extraction = extract_cv(self._resume_path(config))
@@ -127,6 +128,7 @@ class Pipeline:
             except Exception as exc:
                 if metrics["failures"]["total"] == failures_before:
                     self._failure("candidate_extraction", metrics)
+                self._finish_metrics(metrics, started)
                 self._save_metrics(run_dir, metrics)
                 manifest.status = RunStatus.FAILED
                 manifest.checkpoint = "extract_profile"
@@ -144,6 +146,7 @@ class Pipeline:
                 "external_actions": "none",
                 "metrics": "metrics.json",
             }
+            self._finish_metrics(metrics, started)
             self._save_metrics(run_dir, metrics)
             self.storage.save_manifest(manifest)
         return manifest
@@ -181,6 +184,7 @@ class Pipeline:
 
     def resume(self, run_id: str) -> RunManifest:
         run_dir = self._run_dir(run_id, must_exist=True)
+        started = time.monotonic()
         with self.storage.run_lock():
             manifest = self.storage.load_manifest(run_id)
             config = self._manifest_config(manifest)
@@ -210,11 +214,17 @@ class Pipeline:
             except Exception as exc:
                 manifest.status = RunStatus.FAILED
                 manifest.failure = {"type": type(exc).__name__, "message": str(exc)}
+                metrics = self._load_metrics(run_dir, config)
+                self._finish_metrics(metrics, started)
+                self._save_metrics(run_dir, metrics)
                 self.storage.save_manifest(manifest)
                 raise
             manifest.status = RunStatus.COMPLETED
             manifest.checkpoint = "completed"
             manifest.output_files = self._relative_files(run_dir)
+            metrics = self._load_metrics(run_dir, config)
+            self._finish_metrics(metrics, started)
+            self._save_metrics(run_dir, metrics)
             self.storage.save_manifest(manifest)
         return manifest
 
@@ -606,6 +616,7 @@ class Pipeline:
             "policy": codex_adapter._POLICY,
             "output_schema": codex_adapter._schema(definition.output_model),
             "requested_model": config.runtime.model,
+            "timeout_seconds": config.runtime.timeout_seconds,
             "rules_version": rules_version,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -655,6 +666,7 @@ class Pipeline:
         metrics["requests"]["total"] += 1
         metrics["model"]["requests"] += 1
         before = len(getattr(adapter, "invocations", []))
+        attempts_before = getattr(adapter, "attempts_started", None)
         try:
             result = call()
         except Exception:
@@ -666,15 +678,20 @@ class Pipeline:
             invocations = getattr(adapter, "invocations", [])
             if len(invocations) > before:
                 metadata = invocations[-1]
-                metrics["model"]["attempts"] += metadata.attempts
+                metrics["model"]["successful_invocations"] += 1
                 if metadata.returned_model and metadata.returned_model not in metrics["model"]["returned_models"]:
                     metrics["model"]["returned_models"].append(metadata.returned_model)
                 if metadata.returned_version and metadata.returned_version not in metrics["model"]["returned_versions"]:
                     metrics["model"]["returned_versions"].append(metadata.returned_version)
-            else:
-                metrics["model"]["attempts"] += 1
             return result
         finally:
+            attempts_after = getattr(adapter, "attempts_started", None)
+            if isinstance(attempts_before, int) and isinstance(attempts_after, int):
+                metrics["model"]["attempts"] += max(0, attempts_after - attempts_before)
+            elif len(getattr(adapter, "invocations", [])) > before:
+                metrics["model"]["attempts"] += getattr(adapter.invocations[-1], "attempts", 1)
+            else:
+                metrics["model"]["attempts"] += 1
             elapsed = time.monotonic() - started
             metrics["elapsed_seconds"] = round(metrics["elapsed_seconds"] + elapsed, 6)
             operation_metrics = metrics["operations"].setdefault(
@@ -705,6 +722,7 @@ class Pipeline:
                 "requested": config.runtime.model,
                 "requests": 0,
                 "attempts": 0,
+                "successful_invocations": 0,
                 "returned_models": [],
                 "returned_versions": [],
             },
@@ -721,13 +739,18 @@ class Pipeline:
             "runtime_controls": {
                 "timeout_seconds": config.runtime.timeout_seconds,
                 "max_attempts_per_request": codex_adapter.MAX_ATTEMPTS,
-                "retry_backoff_seconds": 0,
-                "max_requests_per_second": MAX_REQUESTS_PER_SECOND,
+                "retry_backoff_seconds": codex_adapter.RETRY_BACKOFF_SECONDS,
+                "max_requests_per_second": codex_adapter.MAX_REQUESTS_PER_SECOND,
                 "configured_max_concurrency": config.runtime.max_concurrency,
                 "effective_concurrency": 1,
                 "repeated_input_changes": "content-addressed cache invalidation",
             },
         }
+
+    @staticmethod
+    def _finish_metrics(metrics: dict[str, Any], started: float) -> None:
+        elapsed = max(time.monotonic() - started, 0.000001)
+        metrics["elapsed_seconds"] = round(max(metrics["elapsed_seconds"], elapsed), 6)
 
     def _load_metrics(self, run_dir: Path, config: AppConfig) -> dict[str, Any]:
         path = run_dir / "metrics.json"
@@ -889,11 +912,7 @@ class Pipeline:
     def _profile_review(
         extraction: CVExtraction, profile: CandidateProfile, version: str
     ) -> str:
-        skills = ", ".join(profile.skills) or "None stated"
-        evidence = [
-            f"- {item.kind.value}: {item.wording} ({', '.join(item.source_ids) or 'unverified'})"
-            for item in profile.evidence
-        ] or ["- None"]
+        visible = profile.model_dump(mode="json", exclude={"resume_text"})
         return "\n".join(
             [
                 "# Candidate profile review",
@@ -901,13 +920,12 @@ class Pipeline:
                 f"- Profile version: `{version}`",
                 f"- Candidate ID: {profile.candidate_id}",
                 f"- Selected CV: {extraction.source_name}",
-                f"- Name: {profile.name or 'Not stated'}",
-                f"- Skills: {skills}",
-                f"- Experience years: {profile.experience_years if profile.experience_years is not None else 'Not stated'}",
                 "",
-                "## Evidence",
+                "## Assessment-visible profile",
                 "",
-                *evidence,
+                "```json",
+                json.dumps(visible, ensure_ascii=False, indent=2, sort_keys=True),
+                "```",
                 "",
                 "Approve only this exact version before assessment.",
                 "No applications, uploads, or messages are performed by this workflow.",

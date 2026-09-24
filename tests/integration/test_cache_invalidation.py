@@ -100,6 +100,7 @@ def test_decision_changes_reuse_model_judgments(tmp_path: Path) -> None:
     assert json.loads((run / "decisions.json").read_text(encoding="utf-8"))["jobs"][0][
         "disposition"
     ] == "shortlisted"
+    assert json.loads((run / "metrics.json").read_text(encoding="utf-8"))["elapsed_seconds"] > 0
 
 
 def test_content_and_as_of_changes_invalidate_only_dependent_artifacts(tmp_path: Path) -> None:

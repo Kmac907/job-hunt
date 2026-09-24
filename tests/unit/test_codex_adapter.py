@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from job_hunt.codex_adapter import CodexAdapter, CodexAdapterError, RECURSION_GUARD
+from job_hunt.codex_adapter import (
+    CodexAdapter,
+    CodexAdapterError,
+    RECURSION_GUARD,
+    RETRY_BACKOFF_SECONDS,
+)
 from job_hunt.models import CandidateProfile, JobPosting, RequirementSet
 
 
@@ -166,3 +171,30 @@ def test_recursion_guard_prevents_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(CodexAdapterError, match="nested"):
         CodexAdapter("gpt-test", runner=runner).extract_candidate("c1", "Ada")
     assert not runner.calls
+
+
+def test_subprocess_attempts_are_spaced_and_counted_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 100.0
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    monkeypatch.setattr("job_hunt.codex_adapter.time.monotonic", monotonic)
+    monkeypatch.setattr("job_hunt.codex_adapter.time.sleep", sleep)
+    runner = FakeCodex(returncode=1, stderr="service temporarily unavailable")
+    adapter = CodexAdapter("gpt-test", runner=runner)
+
+    with pytest.raises(CodexAdapterError):
+        adapter.extract_candidate("c1", "Ada")
+
+    assert len(runner.calls) == adapter.attempts_started == 2
+    assert sleeps == [RETRY_BACKOFF_SECONDS]
+    assert adapter.invocations == []

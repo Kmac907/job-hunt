@@ -1,7 +1,25 @@
 import json
+import subprocess
+from datetime import date
 from pathlib import Path
 
-from job_hunt.models import Assessment, CandidateProfile, RequirementRecord, RequirementSet
+import pytest
+
+from job_hunt.codex_adapter import CodexAdapter, CodexAdapterError, RETRY_BACKOFF_SECONDS
+from job_hunt.cv import CVExtraction, SourceBlock
+from job_hunt.models import (
+    Assessment,
+    CandidateProfile,
+    DatePrecision,
+    ProfileEvidence,
+    ProfileEvidenceKind,
+    Qualification,
+    QualificationState,
+    RequirementRecord,
+    RequirementSet,
+    SupportedInterval,
+    ProfileDate,
+)
 from job_hunt.pipeline import Pipeline
 
 
@@ -86,7 +104,7 @@ def test_runtime_controls_metrics_and_limit_coverage(tmp_path: Path) -> None:
     assert metrics["runtime_controls"] == {
         "timeout_seconds": 17,
         "max_attempts_per_request": 2,
-        "retry_backoff_seconds": 0,
+        "retry_backoff_seconds": RETRY_BACKOFF_SECONDS,
         "max_requests_per_second": 20,
         "configured_max_concurrency": 2,
         "effective_concurrency": 1,
@@ -96,3 +114,115 @@ def test_runtime_controls_metrics_and_limit_coverage(tmp_path: Path) -> None:
     assert "cost" not in json.dumps(metrics).casefold()
     assert coverage["scope_complete"] is False
     assert manifest.output_metadata["limit_reached"] == "max_jobs"
+
+
+def test_pipeline_persists_failed_subprocess_attempts_without_invocation_metadata(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "resume.txt").write_text("Python", encoding="utf-8")
+    (tmp_path / "companies.yaml").write_text(
+        "schema_version: '1.0'\ncompanies: [{name: Acme}]\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "resume_path: resume.txt\ncompanies_path: companies.yaml\noutput_dir: output\n"
+        "as_of: 2026-09-21\ntimezone: UTC\nruntime: {model: fake}\n",
+        encoding="utf-8",
+    )
+    jobs = tmp_path / "jobs.json"
+    jobs.write_text('{"jobs": []}', encoding="utf-8")
+    calls: list[object] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "service temporarily unavailable")
+
+    adapter = CodexAdapter("fake", runner=runner)
+    with pytest.raises(CodexAdapterError):
+        Pipeline(tmp_path / "config.yaml", jobs, adapter=adapter).run()
+
+    run_dir = next((tmp_path / "output/runs").iterdir())
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert len(calls) == adapter.attempts_started == 2
+    assert adapter.invocations == []
+    assert metrics["model"]["attempts"] == 2
+    assert metrics["model"]["successful_invocations"] == 0
+    assert manifest["status"] == "failed"
+    assert manifest["failure"]["message"]
+
+
+def test_profile_review_contains_all_visible_fields_but_not_resume_text(tmp_path: Path) -> None:
+    extraction = CVExtraction(
+        source_name="resume.txt",
+        source_format="text",
+        source_hash="cv-hash",
+        extraction_hash="extraction-hash",
+        normalized_text="RAW RESUME TEXT",
+        blocks=(SourceBlock(source_id="resume", kind="line_range", location="1", text="Python"),),
+    )
+    profile = CandidateProfile(
+        candidate_id="c1",
+        name="Ada",
+        resume_text="RAW RESUME TEXT",
+        skills=["Python"],
+        experience_years=5,
+        preferences={"remote": True},
+        cv_hash="cv-hash",
+        extraction_hash="extraction-hash",
+        evidence=[
+            ProfileEvidence(
+                kind=ProfileEvidenceKind.SUPPORTED_INTERPRETATION,
+                wording="Python",
+                source_ids=["resume"],
+                interpretation="backend experience",
+            )
+        ],
+        experience_intervals=[
+            SupportedInterval(
+                start=ProfileDate(value=date(2020, 1, 1), precision=DatePrecision.YEAR),
+                present=True,
+                source_ids=["resume"],
+                capability="Python",
+            )
+        ],
+        qualifications=[
+            Qualification(
+                original_title="AWS course",
+                state=QualificationState.IN_PROGRESS,
+                source_ids=["resume"],
+            )
+        ],
+    )
+    review = Pipeline._profile_review(extraction, profile, "profile-hash")
+    for value in (
+        "preferences",
+        "cv_hash",
+        "extraction_hash",
+        "experience_intervals",
+        "qualifications",
+        "interpretation",
+        "backend experience",
+    ):
+        assert value in review
+    assert "RAW RESUME TEXT" not in review
+
+
+def test_initial_extraction_failure_persists_failed_manifest(tmp_path: Path) -> None:
+    (tmp_path / "resume.txt").write_text("", encoding="utf-8")
+    (tmp_path / "companies.yaml").write_text(
+        "schema_version: '1.0'\ncompanies: [{name: Acme}]\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "resume_path: resume.txt\ncompanies_path: companies.yaml\noutput_dir: output\n"
+        "as_of: 2026-09-21\ntimezone: UTC\nruntime: {model: fake}\n",
+        encoding="utf-8",
+    )
+    jobs = tmp_path / "jobs.json"
+    jobs.write_text('{"jobs": []}', encoding="utf-8")
+    with pytest.raises(Exception):
+        Pipeline(tmp_path / "config.yaml", jobs, adapter=Adapter()).run()
+    run_dir = next((tmp_path / "output/runs").iterdir())
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["failure"]["type"]
+    assert manifest["failure"]["message"]

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from job_hunt.cli import DISCLOSURE, main
+from job_hunt.codex_adapter import CodexPreflight
 
 
 def write_config(tmp_path: Path, *, model: str = "gpt-5", collectors: str = "[]") -> Path:
@@ -15,7 +16,8 @@ def write_config(tmp_path: Path, *, model: str = "gpt-5", collectors: str = "[]"
     return config
 
 
-def test_doctor_discloses_processing_and_passes(tmp_path: Path, capsys) -> None:
+def test_doctor_discloses_processing_and_passes(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr("job_hunt.cli.codex_preflight", lambda **_: CodexPreflight("codex-cli test"))
     config = write_config(tmp_path)
     assert main(["doctor", "--config", str(config)]) == 0
     output = capsys.readouterr()

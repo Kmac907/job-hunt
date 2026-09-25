@@ -6,6 +6,7 @@ import os
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -71,6 +72,50 @@ class RuntimeConfig(BaseModel):
         return value
 
 
+def origin_for_url(value: str) -> str:
+    parsed = urlsplit(value)
+    try:
+        host = parsed.hostname
+        port = 443 if parsed.port is None else parsed.port
+    except ValueError as exc:
+        raise ValueError("collector origins must use a valid HTTPS host and port") from exc
+    if parsed.scheme.casefold() != "https" or not host or parsed.username or parsed.password:
+        raise ValueError("collector origins must be HTTPS without credentials")
+    host = host.casefold().rstrip(".")
+    if ":" in host:
+        host = f"[{host}]"
+    return f"https://{host}" if port == 443 else f"https://{host}:{port}"
+
+
+def normalize_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("collector allowed_origins must not contain paths, queries, or fragments")
+    return origin_for_url(value)
+
+
+class CollectorConfig(BaseModel):
+    """Network limits for one portal; secret values stay in environment variables."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    allowed_origins: list[str] = Field(default_factory=list)
+    timeout_seconds: float = Field(default=30, gt=0, le=300)
+    max_retries: int = Field(default=2, ge=0, le=5)
+    max_redirects: int = Field(default=3, ge=0, le=10)
+    backoff_seconds: float = Field(default=0.5, ge=0, le=30)
+    requests_per_second: float = Field(default=2, gt=0, le=100)
+    max_concurrency: int = Field(default=2, ge=1, le=16)
+    credential_env: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def configured_destinations(self) -> "CollectorConfig":
+        if not self.allowed_origins:
+            raise ValueError("collector requires at least one configured origin")
+        self.allowed_origins = sorted({normalize_origin(origin) for origin in self.allowed_origins})
+        return self
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["1.0"] = "1.0"
@@ -83,7 +128,7 @@ class AppConfig(BaseModel):
     scoring_weights: ScoringWeights = Field(default_factory=ScoringWeights)
     preferences: Preferences | None = None
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
-    collectors: list[str] = Field(default_factory=list)
+    collectors: list[str | CollectorConfig] = Field(default_factory=list)
 
     @field_validator("timezone")
     @classmethod
@@ -158,7 +203,7 @@ def preflight(config_path: str | Path) -> tuple[AppConfig, CompaniesFile]:
         raise ConfigError(f"resume file does not exist: {resume}")
     companies = load_companies(companies_path)
     if config.collectors:
-        names = ", ".join(config.collectors)
+        names = ", ".join(item if isinstance(item, str) else item.name for item in config.collectors)
         raise ConfigError(f"configured collectors are not supported yet: {names}")
     model = config.runtime.model or os.getenv("CODEX_MODEL")
     if not model:

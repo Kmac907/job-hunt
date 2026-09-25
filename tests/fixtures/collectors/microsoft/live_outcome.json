@@ -1,11 +1,11 @@
 {
   "portal": "microsoft",
-  "observed_at": "2026-09-25T13:37:57.187231+00:00",
+  "observed_at": "2026-09-25T12:13:47.984375+00:00",
   "entrypoint": "https://jobs.careers.microsoft.com/v2/global/en/",
   "current_site": "https://apply.careers.microsoft.com/careers",
   "status": "unsupported",
   "http_status": 200,
   "final_url": "https://apply.careers.microsoft.com/careers",
   "blocker": "Microsoft's official careers entry point redirects to the new apply.careers.microsoft.com/careers experience; no public discovery, detail, pagination, closure, or original-posting-date contract was verified within the inspection deadline.",
-  "elapsed_seconds": 2.015
+  "elapsed_seconds": 1.23
 }

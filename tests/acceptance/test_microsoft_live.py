@@ -53,9 +53,10 @@ def test_microsoft_live_probe_persists_current_outcome() -> None:
         worker = context.Process(target=_probe, args=(MICROSOFT_ENTRYPOINT, sender), daemon=True)
         worker.start()
         sender.close()
-        worker.join(max(0, started + DEADLINE_SECONDS - time.monotonic()))
+        deadline = started + DEADLINE_SECONDS
+        worker.join(max(0, deadline - time.monotonic()))
         if worker.is_alive():
-            worker.terminate()
+            worker.kill()
             worker.join(timeout=0.1)
             outcome.update(status="unsupported", blocker="official probe exceeded its hard deadline")
         elif receiver.poll():

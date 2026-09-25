@@ -1,0 +1,37 @@
+{
+  "portal": "microsoft",
+  "entrypoint": "https://jobs.careers.microsoft.com/v2/global/en/",
+  "current_site": "https://apply.careers.microsoft.com/careers",
+  "status": "unsupported",
+  "blocker": "Microsoft's official careers entry point redirects to the new apply.careers.microsoft.com/careers experience; no public discovery, detail, pagination, closure, or original-posting-date contract was verified within the inspection deadline.",
+  "discovery": {
+    "status": "unsupported",
+    "complete": null,
+    "pagination": "not_verified"
+  },
+  "details": {
+    "status": "unsupported",
+    "complete": false,
+    "required_fields": ["portal_job_id", "canonical_url", "title", "description", "original_posting_date"]
+  },
+  "canonical_identity": {
+    "status": "not_verified",
+    "required_inputs": ["company", "portal_job_id_or_canonical_url"],
+    "titles_are_excluded": true
+  },
+  "dates": {
+    "required_precision": "day",
+    "required_meaning": "original publication",
+    "invalid_cases": ["missing", "conflicting", "future", "differently_defined"]
+  },
+  "cutoff": {
+    "configurable": true,
+    "accepted_decision": "eligible",
+    "below_cutoff_decision": "below-cutoff",
+    "invalid_date_decision": "review-needed"
+  },
+  "closure": {
+    "status": "unsupported",
+    "availability": "unknown"
+  }
+}

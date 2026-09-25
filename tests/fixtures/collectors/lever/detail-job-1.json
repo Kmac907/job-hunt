@@ -1,0 +1,11 @@
+{
+  "id": "job-1",
+  "text": "Platform Engineer",
+  "descriptionPlain": "Build reliable systems.",
+  "hostedUrl": "https://jobs.lever.co/example/job-1",
+  "employer": "Example Corp",
+  "createdAt": 1779405000000,
+  "updatedAt": 1779405000000,
+  "state": "published",
+  "categories": {"location": "Anchorage", "commitment": "Full-time", "department": "Engineering"}
+}

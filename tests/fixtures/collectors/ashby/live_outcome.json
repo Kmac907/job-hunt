@@ -1,0 +1,11 @@
+{
+  "portal": "ashby",
+  "board_name": "Ashby",
+  "endpoint": "https://api.ashbyhq.com/posting-api/job-board/Ashby",
+  "observed_at": "2026-09-25T12:30:19.559005+00:00",
+  "status": "success",
+  "http_status": 200,
+  "final_url": "https://api.ashbyhq.com/posting-api/job-board/Ashby",
+  "job_count": 66,
+  "elapsed_seconds": 0.244
+}

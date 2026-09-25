@@ -109,6 +109,28 @@ def test_board_identity_and_response_version_are_required() -> None:
     assert "hosted HTTPS URL" in mismatched_job.coverage.failures[0]
 
 
+def test_documented_single_component_job_url_is_accepted() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload["jobs"][0]["jobUrl"] = "https://jobs.ashbyhq.com/example_job"
+
+    result = collector(json.dumps(payload).encode()).discover("Example Corp")
+
+    assert any(str(item.canonical_url) == payload["jobs"][0]["jobUrl"] for item in result.listings)
+
+
+def test_verify_rejects_malformed_matching_job() -> None:
+    discovered = collector().discover("Example Corp").listings[0]
+    posting = collector().fetch(discovered).posting
+    assert posting is not None
+
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload["jobs"][0].pop("descriptionPlain")
+    verified = collector(json.dumps(payload).encode()).verify(posting)
+
+    assert verified.status == CollectorStatus.FAILED
+    assert verified.error and "malformed" in verified.error
+
+
 def test_contract_fixture_covers_public_shape() -> None:
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert payload["apiVersion"] == "1"

@@ -551,7 +551,8 @@ class Pipeline:
                         verify_error = verification.error
                     if verified is None:
                         complete = False
-                        fetch_errors.append(f"{posting.job_id}: {verify_error or 'verification failed'}")
+                        verify_error = verify_error or "verification did not establish availability"
+                        fetch_errors.append(f"{posting.job_id}: {verify_error}")
                     items[posting.job_id] = {
                         "job": posting.as_job_posting(),
                         "source_record_id": f"collector/{name}/{posting.job_id}",

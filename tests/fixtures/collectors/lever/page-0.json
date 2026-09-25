@@ -1,0 +1,16 @@
+[
+  {
+    "id": "job-1",
+    "text": "Platform Engineer",
+    "hostedUrl": "https://jobs.lever.co/example/job-1",
+    "employer": "Example Corp",
+    "categories": {"location": "Anchorage", "commitment": "Full-time"}
+  },
+  {
+    "id": "job-2",
+    "text": "Data Engineer",
+    "hostedUrl": "https://jobs.lever.co/example/job-2",
+    "employer": "Example Corp",
+    "categories": {"allLocations": ["Remote", "New York"]}
+  }
+]

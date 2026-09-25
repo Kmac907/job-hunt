@@ -1,0 +1,7 @@
+{
+  "status": "unsupported",
+  "board_token": "qualtrics",
+  "checked_at": null,
+  "reason": "live check not run; run pytest -m live tests/acceptance/test_greenhouse_live.py",
+  "evidence": []
+}

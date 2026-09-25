@@ -1,0 +1,14 @@
+{
+  "id": 101,
+  "title": "Platform Engineer",
+  "company_name": "Example Greenhouse",
+  "first_published": "2026-09-01T08:00:00-08:00",
+  "updated_at": "2026-09-20T12:30:00Z",
+  "requisition_id": "REQ-101",
+  "location": {"name": "Anchorage, AK"},
+  "content": "&amp;lt;h2&amp;gt;Build things&amp;lt;/h2&amp;gt; &amp;lt;p&amp;gt;Build &amp;amp; operate systems.&amp;lt;/p&amp;gt;",
+  "absolute_url": "https://boards.greenhouse.io/example/jobs/101",
+  "metadata": [{"id": 1, "name": "Workplace", "value_type": "text", "value": "Remote"}],
+  "departments": [{"id": 1, "name": "Engineering"}],
+  "offices": []
+}

@@ -10,6 +10,9 @@ from job_hunt.models import (
     MatchDecision,
     RequirementSet,
     RunManifest,
+    NormalizedJobPosting,
+    PostingDates,
+    SourceDate,
 )
 
 
@@ -48,4 +51,24 @@ def test_scores_and_manifest_timestamp_are_bounded() -> None:
             effective_config={},
             model="gpt-5",
         )
+
+
+def test_last_published_is_not_an_original_posting_date() -> None:
+    last_published = SourceDate(
+        original_name="publishedAt",
+        raw_value="2026-09-21T12:30:00Z",
+        value=datetime(2026, 9, 21, 12, 30, tzinfo=timezone.utc),
+        precision="minute",
+        utc_offset="+00:00",
+        meaning="last publication",
+    )
+    posting = NormalizedJobPosting(
+        company="Acme",
+        portal="ashby",
+        canonical_url="https://jobs.ashbyhq.com/Acme/engineer",
+        title="Engineer",
+        description="Build things",
+        dates=PostingDates(last_published=last_published, first_seen=last_published),
+    )
+    assert posting.as_job_posting().posted_at is None
 

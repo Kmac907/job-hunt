@@ -257,6 +257,7 @@ class JobListing(BaseModel):
     canonical_url: HttpUrl | None = None
     title: str | None = None
     locations: list[str] = Field(default_factory=list)
+    is_listed: bool | None = None
     job_id: str | None = None
 
     @model_validator(mode="after")
@@ -281,7 +282,8 @@ class NormalizedJobPosting(JobListing):
     raw_fields: dict[str, Any] = Field(default_factory=dict)
 
     def as_job_posting(self) -> JobPosting:
-        posted = self.dates.original or self.dates.last_published
+        # A last-published timestamp is not evidence of the original posting date.
+        posted = self.dates.original
         return JobPosting(
             job_id=self.job_id or "",
             company=self.company,

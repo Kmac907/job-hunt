@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import socket
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +28,17 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "live: bounded live provider probe")
 
 
+def _probe(entrypoint: str, result) -> None:  # noqa: ANN001
+    try:
+        request = Request(entrypoint, headers={"User-Agent": "job-hunt/1.0"})
+        with urlopen(request, timeout=DEADLINE_SECONDS) as response:  # noqa: S310
+            result.send(("response", (response.status, response.geturl())))
+    except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as exc:
+        result.send(("blocked", f"official probe blocked: {type(exc).__name__}: {exc}"))
+    finally:
+        result.close()
+
+
 def test_microsoft_live_probe_persists_current_outcome() -> None:
     started = time.monotonic()
     outcome = {
@@ -37,26 +48,26 @@ def test_microsoft_live_probe_persists_current_outcome() -> None:
         "current_site": MICROSOFT_CURRENT_SITE,
     }
     try:
-        request = Request(MICROSOFT_ENTRYPOINT, headers={"User-Agent": "job-hunt/1.0"})
-        probe_result: list[tuple[str, object]] = []
-
-        def probe() -> None:
-            try:
-                with urlopen(request, timeout=DEADLINE_SECONDS) as response:  # noqa: S310
-                    probe_result.append(("response", (response.status, response.geturl())))
-            except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as exc:
-                probe_result.append(("blocked", f"official probe blocked: {type(exc).__name__}: {exc}"))
-
-        worker = threading.Thread(target=probe, daemon=True)
+        context = multiprocessing.get_context("spawn")
+        receiver, sender = context.Pipe(duplex=False)
+        worker = context.Process(target=_probe, args=(MICROSOFT_ENTRYPOINT, sender), daemon=True)
         worker.start()
+        sender.close()
         worker.join(max(0, started + DEADLINE_SECONDS - time.monotonic()))
         if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=0.1)
             outcome.update(status="unsupported", blocker="official probe exceeded its hard deadline")
-        elif probe_result[0][0] == "response":
-            status, final_url = probe_result[0][1]  # type: ignore[misc]
-            outcome.update(status="unsupported", http_status=status, final_url=final_url, blocker=MICROSOFT_BLOCKER)
+        elif receiver.poll():
+            probe_result = receiver.recv()
+            if probe_result[0] == "response":
+                status, final_url = probe_result[1]
+                outcome.update(status="unsupported", http_status=status, final_url=final_url, blocker=MICROSOFT_BLOCKER)
+            else:
+                outcome.update(status="unsupported", blocker=probe_result[1])
         else:
-            outcome.update(status="unsupported", blocker=probe_result[0][1])
+            outcome.update(status="unsupported", blocker=f"official probe exited without result (exit code {worker.exitcode})")
+        receiver.close()
     finally:
         outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
         OUTCOME.write_text(json.dumps(outcome, indent=2) + "\n", encoding="utf-8")

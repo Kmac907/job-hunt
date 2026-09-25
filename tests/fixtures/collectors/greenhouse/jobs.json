@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "id": 101,
+      "title": "Platform Engineer",
+      "updated_at": "2026-09-20T12:30:00Z",
+      "requisition_id": "REQ-101",
+      "location": {"name": "Anchorage, AK"},
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/101",
+      "metadata": [{"id": 1, "name": "Workplace", "value_type": "text", "value": "Remote"}],
+      "content": "&amp;lt;p&amp;gt;Build &amp;amp; operate systems.&amp;lt;/p&amp;gt;",
+      "departments": [{"id": 1, "name": "Engineering"}],
+      "offices": []
+    },
+    {
+      "id": 101,
+      "title": "Duplicate Platform Engineer",
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/101"
+    },
+    {
+      "id": 102,
+      "title": "Incomplete"
+    }
+  ],
+  "meta": {"total": 3}
+}

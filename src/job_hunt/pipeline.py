@@ -532,6 +532,8 @@ class Pipeline:
                         fetch_errors.append(f"{listing.job_id}: {fetched.error or fetched.status.value}")
                         continue
                     posting = fetched.posting
+                    if not self._posting_in_scope(posting, scope_data):
+                        continue
                     posted = posting.dates.original.value if posting.dates.original else None
                     posted_date = posted.date() if isinstance(posted, datetime) else posted
                     if posted_date is not None and posted_date > manifest.as_of:
@@ -569,7 +571,38 @@ class Pipeline:
                     error="; ".join(filter(None, [error, *fetch_errors])) or None,
                 ))
         scope = "configured collectors for " + ", ".join(c.name for c in self._load_companies(config).companies)
-        return list(items.values()), attempts, snapshots, providers, scope, total or None, complete if attempts else None
+        source_total = len(items) if complete else total
+        return list(items.values()), attempts, snapshots, providers, scope, source_total, complete if attempts else None
+
+    @staticmethod
+    def _posting_in_scope(posting: Any, scope: dict[str, Any]) -> bool:
+        """Apply only positive scope evidence; missing portal fields remain in scope for review."""
+        titles = [str(value).casefold().strip() for value in scope.get("titles", []) if str(value).strip()]
+        title = str(getattr(posting, "title", "")).casefold().strip()
+        if titles and title and not any(term in title for term in titles):
+            return False
+
+        locations = [str(value).casefold().strip() for value in getattr(posting, "locations", []) if str(value).strip()]
+        requested_locations = [
+            str(value).casefold().strip() for value in scope.get("locations", []) if str(value).strip()
+        ]
+        if requested_locations and locations and not any(
+            requested in location or location in requested
+            for requested in requested_locations
+            for location in locations
+        ):
+            return False
+
+        raw_fields = getattr(posting, "raw_fields", {})
+        explicit_remote = next(
+            (raw_fields[key] for key in ("isRemote", "is_remote", "remote") if isinstance(raw_fields.get(key), bool)),
+            None,
+        )
+        remote = explicit_remote if explicit_remote is not None else any("remote" in location for location in locations)
+        requested_remote = scope.get("remote")
+        if requested_remote is None or explicit_remote is None and not locations:
+            return True
+        return remote == requested_remote
 
     def _load_companies(self, config: AppConfig) -> CompaniesFile:
         return self._companies_for_config(config)
@@ -700,6 +733,8 @@ class Pipeline:
         )
         if item.get("available") is False:
             disposition = Disposition.EXCLUDED
+        elif item.get("verification_error"):
+            disposition = Disposition.UNASSESSED
         reason = error or {
             Disposition.EXCLUDED: "failed mandatory eligibility",
             Disposition.NEEDS_REVIEW: "mandatory eligibility needs review",

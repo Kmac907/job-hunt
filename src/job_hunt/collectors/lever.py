@@ -244,6 +244,8 @@ class LeverCollector(Collector):
         return posting_id
 
     def _validate_identity(self, item: Mapping[str, Any], posting_id: str, company: str) -> None:
+        if item.get("id") != posting_id:
+            raise LeverContractError("Lever posting detail ID does not match the requested posting")
         employer = item.get("employer")
         if isinstance(employer, str) and employer.strip() and employer.casefold().strip() != company.casefold().strip():
             raise LeverContractError(f"Lever site identity mismatch: employer={employer!r}")

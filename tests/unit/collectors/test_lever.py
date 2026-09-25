@@ -116,6 +116,32 @@ def test_fetch_and_verify_use_the_same_authoritative_detail() -> None:
     assert verified.evidence[0].snapshot_sha256 == verified.snapshots[0].sha256
 
 
+def test_detail_identity_must_match_requested_posting() -> None:
+    found = collector().discover("Example Corp")
+    fetched = collector().fetch(found.listings[0])
+    assert fetched.posting is not None
+
+    opener = FixtureOpener()
+    original = opener.open
+
+    def mismatched(request, timeout):  # noqa: ANN001
+        if request.full_url.endswith("/job-1"):
+            return Response(
+                request.full_url,
+                {
+                    "id": "job-2",
+                    "text": "Wrong posting",
+                    "descriptionPlain": "Wrong description",
+                    "state": "published",
+                },
+            )
+        return original(request, timeout)
+
+    opener.open = mismatched
+    assert collector(opener).fetch(found.listings[0]).status == "failed"
+    assert collector(opener).verify(fetched.posting).status == "failed"
+
+
 def test_detail_failure_and_rate_limit_are_not_success() -> None:
     found = collector().discover("Example Corp")
     failed = collector().fetch(next(item for item in found.listings if item.portal_job_id == "job-3"))

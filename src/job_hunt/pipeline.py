@@ -16,7 +16,8 @@ from pydantic import BaseModel, ValidationError
 
 from . import codex_adapter
 from .codex_adapter import CodexAdapter, CodexAdapterError
-from .config import AppConfig, CompaniesFile, load_config, preflight, resolve_safe
+from .config import AppConfig, CompaniesFile, load_companies, load_config, preflight, resolve_safe
+from .collectors import build_collector, collector_name
 from .cv import (
     CVExtraction,
     ProfileApproval,
@@ -72,6 +73,7 @@ class Pipeline:
         jobs_path: str | Path | None = None,
         *,
         adapter: Any | None = None,
+        collectors: dict[str, Any] | None = None,
     ) -> None:
         self.config_path = Path(config_path).resolve()
         self.config = load_config(self.config_path)
@@ -80,15 +82,19 @@ class Pipeline:
         self.storage = Storage(self.output)
         self.jobs_path = Path(jobs_path) if jobs_path is not None else None
         self.adapter = adapter
+        self.collectors = collectors or {}
 
     def run(self) -> RunManifest:
         config, companies = self._preflight()
-        fixture = self._fixture_path(required=True)
-        try:
-            fixture_bytes = fixture.read_bytes()
-        except OSError as exc:
-            raise PipelineError(f"cannot read saved job fixture {fixture}: {exc}") from exc
-        fixture_hash = sha256(fixture_bytes).hexdigest()
+        fixture = None if config.collectors else self._fixture_path(required=True)
+        fixture_bytes = b""
+        fixture_hash = None
+        if fixture:
+            try:
+                fixture_bytes = fixture.read_bytes()
+            except OSError as exc:
+                raise PipelineError(f"cannot read saved job fixture {fixture}: {exc}") from exc
+            fixture_hash = sha256(fixture_bytes).hexdigest()
         now = datetime.now(ZoneInfo(config.timezone))
         run_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
         run_dir = self._run_dir(run_id)
@@ -99,9 +105,11 @@ class Pipeline:
             timezone=config.timezone,
             effective_config={
                 **config.snapshot(companies),
-                "jobs_fixture": str(fixture.relative_to(self.base).as_posix()),
-                "jobs_fixture_sha256": fixture_hash,
-                "mode": "offline_saved_fixtures",
+                **({
+                    "jobs_fixture": str(fixture.relative_to(self.base).as_posix()),
+                    "jobs_fixture_sha256": fixture_hash,
+                } if fixture else {}),
+                "mode": "configured_collectors" if config.collectors else "offline_saved_fixtures",
             },
             status=RunStatus.RUNNING,
             app_version=APP_VERSION,
@@ -110,7 +118,8 @@ class Pipeline:
             model=config.runtime.model or "",
         )
         with self.storage.run_lock():
-            self.storage.write_bytes(run_dir / "jobs-fixture.json", fixture_bytes, replace=False)
+            if fixture:
+                self.storage.write_bytes(run_dir / "jobs-fixture.json", fixture_bytes, replace=False)
             self.storage.save_manifest(manifest)
             metrics = self._new_metrics(config)
             started = time.monotonic()
@@ -252,6 +261,9 @@ class Pipeline:
         extraction: CVExtraction,
     ) -> None:
         fixture_path = run_dir / "jobs-fixture.json"
+        if not fixture_path.is_file():
+            self._complete_collector_run(run_dir, manifest, config, profile, approval, extraction)
+            return
         try:
             fixture_hash = sha256(fixture_path.read_bytes()).hexdigest()
         except OSError as exc:
@@ -366,6 +378,238 @@ class Pipeline:
             }
         )
         self._save_metrics(run_dir, metrics)
+
+    def _complete_collector_run(
+        self,
+        run_dir: Path,
+        manifest: RunManifest,
+        config: AppConfig,
+        profile: CandidateProfile,
+        approval: ProfileApproval,
+        extraction: CVExtraction,
+    ) -> None:
+        """Collect, verify, and then reuse the normal assessment path."""
+        items, attempts, snapshots, providers, scope, source_total, scope_complete = self._collect_jobs(
+            config, manifest, run_dir
+        )
+        fixture = {
+            "jobs": items,
+            "scope": scope,
+            "source_total": source_total,
+            "scope_complete": scope_complete,
+            "limit_reached": None,
+        }
+        self._complete_collected_items(
+            run_dir, manifest, config, profile, approval, extraction, fixture, attempts, snapshots, providers
+        )
+
+    def _complete_collected_items(
+        self,
+        run_dir: Path,
+        manifest: RunManifest,
+        config: AppConfig,
+        profile: CandidateProfile,
+        approval: ProfileApproval,
+        extraction: CVExtraction,
+        fixture: dict[str, Any],
+        attempts: list[CollectionAttempt],
+        snapshots: list[dict[str, Any]],
+        providers: list[dict[str, Any]],
+    ) -> None:
+        metrics = self._load_metrics(run_dir, config)
+        adapter = self.adapter or CodexAdapter(config.runtime.model or "", timeout_seconds=config.runtime.timeout_seconds)
+        sources = {block.source_id: block.text for block in extraction.blocks}
+        sources["resume"] = extraction.normalized_text
+        completed: list[dict[str, Any]] = []
+        for index, item in enumerate(fixture["jobs"]):
+            checkpoint_path = run_dir / "checkpoints" / f"{index:06d}.json"
+            checkpoint = self._checkpoint(checkpoint_path, index, item["job"].job_id)
+            if checkpoint is None:
+                checkpoint = self._process_job(
+                    item, manifest, config, profile, approval, adapter, sources, metrics, run_dir
+                )
+                self._write(checkpoint_path, {"index": index, **checkpoint})
+            completed.append(checkpoint)
+
+        records = [ReportJobRecord.model_validate(item["record"]) for item in completed]
+        attempt = CollectionAttempt(
+            attempt_id=f"collectors-{manifest.run_id}",
+            source="configured_collectors",
+            scope=fixture["scope"],
+            attempted_at=manifest.created_at,
+            discovered_job_ids=[item["job"].job_id for item in fixture["jobs"]],
+            discovered_total=fixture["source_total"],
+            error=None if fixture["scope_complete"] else "one or more configured collector scopes are incomplete",
+        )
+        snapshot = build_snapshot(
+            manifest.run_id,
+            manifest.as_of,
+            fixture["scope"],
+            records,
+            attempts=[*attempts, attempt],
+            source_total=fixture["source_total"],
+            scope_complete=fixture["scope_complete"],
+        )
+        self._write(run_dir / "requirements.json", {"jobs": [item["requirements"] for item in completed]})
+        self._write(run_dir / "assessments.json", {"jobs": [item["assessment"] for item in completed]})
+        decisions = [
+            {"job_id": r.job.job_id, "disposition": r.disposition, "score": r.raw_score,
+             "reason": r.reason, "source_record_ids": r.source_record_ids}
+            for r in records
+        ]
+        self._write(run_dir / "decisions.json", {"jobs": decisions})
+        self._write(run_dir / "matches.json", {"jobs": [d for d in decisions if d["disposition"] == Disposition.SHORTLISTED]})
+        self._write(run_dir / "review-queue.json", {"jobs": [d for d in decisions if d["disposition"] in {Disposition.NEEDS_REVIEW, Disposition.UNASSESSED}]})
+        self._write(run_dir / "coverage.json", snapshot.coverage)
+        self._write(
+            run_dir / "collection.json",
+            {"snapshots": snapshots, "attempts": [attempt.model_dump(mode="json") for attempt in attempts], "providers": providers},
+        )
+        self._write(run_dir / "report-snapshot.json", snapshot)
+        for name, content in render_reports(snapshot).items():
+            self.storage.write_bytes(run_dir / name, content)
+        manifest.counts = {
+            "jobs": len(records), "assessed": sum(r.assessment is not None for r in records),
+            "unassessed": sum(r.disposition == Disposition.UNASSESSED for r in records),
+            "matches": sum(r.disposition == Disposition.SHORTLISTED for r in records),
+            "review_queue": sum(r.disposition in {Disposition.NEEDS_REVIEW, Disposition.UNASSESSED} for r in records),
+        }
+        manifest.output_metadata.update({
+            "collector_scope_complete": fixture["scope_complete"],
+            "availability": "verified" if snapshots else "not_checked",
+            "external_actions": "none",
+            "metrics": "metrics.json",
+        })
+        self._save_metrics(run_dir, metrics)
+
+    def _collect_jobs(
+        self, config: AppConfig, manifest: RunManifest, run_dir: Path
+    ) -> tuple[list[dict[str, Any]], list[CollectionAttempt], list[dict[str, Any]], list[dict[str, Any]], str, int | None, bool | None]:
+        from .models import CollectorStatus
+
+        items: dict[str, dict[str, Any]] = {}
+        attempts: list[CollectionAttempt] = []
+        snapshots: list[dict[str, Any]] = []
+        providers: list[dict[str, Any]] = []
+        complete = True
+        total = 0
+        for company in self._load_companies(config).companies:
+            company_specs = config.collectors
+            for spec in company_specs:
+                name = collector_name(spec)
+                collector = self.collectors.get(f"{company.name}:{name}") or self.collectors.get(name)
+                if collector is None:
+                    collector = build_collector(spec, company.name)
+                scope_data = (company.scope.model_dump(exclude_none=True) if company.scope else {})
+                result = collector.discover(company.name, scope_data)
+                providers.append({
+                    "company": company.name, "collector": name, "status": result.status.value,
+                    "error": result.error,
+                })
+                snapshots.extend([s.model_dump(mode="json") for s in result.snapshots])
+                discovered_ids = [listing.job_id for listing in result.listings]
+                error = result.error
+                if result.status != CollectorStatus.SUCCESS:
+                    complete = False
+                if result.coverage.total is not None:
+                    total += result.coverage.total
+                if result.status in {CollectorStatus.BLOCKED, CollectorStatus.UNSUPPORTED, CollectorStatus.FAILED}:
+                    attempts.append(CollectionAttempt(
+                        attempt_id=f"{manifest.run_id}-{company.name}-{name}", source=name,
+                        scope=result.coverage.scope, attempted_at=manifest.created_at,
+                        discovered_job_ids=discovered_ids, discovered_total=result.coverage.total,
+                        error=error,
+                    ))
+                    continue
+                fetch_errors: list[str] = []
+                for listing in result.listings:
+                    if listing.job_id in items:
+                        continue
+                    fetched = collector.fetch(listing)
+                    snapshots.extend([s.model_dump(mode="json") for s in fetched.snapshots])
+                    if fetched.status != CollectorStatus.SUCCESS or fetched.posting is None:
+                        complete = False
+                        fetch_errors.append(f"{listing.job_id}: {fetched.error or fetched.status.value}")
+                        continue
+                    posting = fetched.posting
+                    if not self._posting_in_scope(posting, scope_data):
+                        continue
+                    posted = posting.dates.original.value if posting.dates.original else None
+                    posted_date = posted.date() if isinstance(posted, datetime) else posted
+                    if posted_date is not None and posted_date > manifest.as_of:
+                        continue
+                    if company.since and posted_date is not None and posted_date < company.since:
+                        continue
+                    verified = None
+                    verify_error = None
+                    for _ in range(2):
+                        verification = collector.verify(posting)
+                        snapshots.extend([s.model_dump(mode="json") for s in verification.snapshots])
+                        if verification.status == CollectorStatus.SUCCESS:
+                            verified = verification.availability.value == "open"
+                            break
+                        verify_error = verification.error
+                    if verified is None:
+                        complete = False
+                        verify_error = verify_error or "verification did not establish availability"
+                        fetch_errors.append(f"{posting.job_id}: {verify_error}")
+                    items[posting.job_id] = {
+                        "job": posting.as_job_posting(),
+                        "source_record_id": f"collector/{name}/{posting.job_id}",
+                        "available": verified,
+                        "original_date_verified": bool(
+                            posting.dates.original
+                            and posting.dates.original.value is not None
+                            and posting.dates.original.precision.value == "day"
+                            and posting.dates.original.meaning.casefold() == "original publication"
+                        ),
+                        "verification_error": verify_error,
+                    }
+                attempts.append(CollectionAttempt(
+                    attempt_id=f"{manifest.run_id}-{company.name}-{name}", source=name,
+                    scope=result.coverage.scope, attempted_at=manifest.created_at,
+                    discovered_job_ids=discovered_ids, discovered_total=result.coverage.total,
+                    error="; ".join(filter(None, [error, *fetch_errors])) or None,
+                ))
+        scope = "configured collectors for " + ", ".join(c.name for c in self._load_companies(config).companies)
+        source_total = len(items) if complete else total
+        return list(items.values()), attempts, snapshots, providers, scope, source_total, complete if attempts else None
+
+    @staticmethod
+    def _posting_in_scope(posting: Any, scope: dict[str, Any]) -> bool:
+        """Apply only positive scope evidence; missing portal fields remain in scope for review."""
+        titles = [str(value).casefold().strip() for value in scope.get("titles", []) if str(value).strip()]
+        title = str(getattr(posting, "title", "")).casefold().strip()
+        if titles and title and not any(term in title for term in titles):
+            return False
+
+        locations = [str(value).casefold().strip() for value in getattr(posting, "locations", []) if str(value).strip()]
+        requested_locations = [
+            str(value).casefold().strip() for value in scope.get("locations", []) if str(value).strip()
+        ]
+        if requested_locations and locations and not any(
+            requested in location or location in requested
+            for requested in requested_locations
+            for location in locations
+        ):
+            return False
+
+        raw_fields = getattr(posting, "raw_fields", {})
+        explicit_remote = next(
+            (raw_fields[key] for key in ("isRemote", "is_remote", "remote") if isinstance(raw_fields.get(key), bool)),
+            None,
+        )
+        remote = explicit_remote if explicit_remote is not None else any("remote" in location for location in locations)
+        requested_remote = scope.get("remote")
+        if requested_remote is None or explicit_remote is None and not locations:
+            return True
+        return remote == requested_remote
+
+    def _load_companies(self, config: AppConfig) -> CompaniesFile:
+        return self._companies_for_config(config)
+
+    def _companies_for_config(self, config: AppConfig) -> CompaniesFile:
+        return load_companies(resolve_safe(self.base, config.companies_path, "companies"))
 
     def _process_job(
         self,
@@ -488,6 +732,10 @@ class Pipeline:
             config.match_threshold,
             assessment_complete=assessment is not None,
         )
+        if item.get("available") is False:
+            disposition = Disposition.EXCLUDED
+        elif item.get("verification_error"):
+            disposition = Disposition.UNASSESSED
         reason = error or {
             Disposition.EXCLUDED: "failed mandatory eligibility",
             Disposition.NEEDS_REVIEW: "mandatory eligibility needs review",
@@ -506,15 +754,15 @@ class Pipeline:
             threshold=config.match_threshold,
             eligibility=eligibility.state,
             gates=eligibility.gates,
-            original_date_verified=False,
-            available=None,
+            original_date_verified=bool(item.get("original_date_verified", False)),
+            available=item.get("available"),
             source_record_ids=[
                 item["source_record_id"],
                 requirement_ref,
                 assessment_ref,
                 f"profile/{approval.profile_hash}",
             ],
-            reason=reason,
+            reason=item.get("verification_error") or ("posting is no longer open" if item.get("available") is False else reason),
             validated=True,
         )
         self._save_metrics(run_dir, metrics)

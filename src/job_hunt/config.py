@@ -107,6 +107,10 @@ class CollectorConfig(BaseModel):
     requests_per_second: float = Field(default=2, gt=0, le=100)
     max_concurrency: int = Field(default=2, ge=1, le=16)
     credential_env: dict[str, str] = Field(default_factory=dict)
+    board_name: str | None = None
+    board_token: str | None = None
+    site: str | None = None
+    company: str | None = None
 
     @model_validator(mode="after")
     def configured_destinations(self) -> "CollectorConfig":
@@ -129,6 +133,17 @@ class AppConfig(BaseModel):
     preferences: Preferences | None = None
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     collectors: list[str | CollectorConfig] = Field(default_factory=list)
+
+    @field_validator("collectors")
+    @classmethod
+    def known_collectors(cls, value: list[str | CollectorConfig]) -> list[str | CollectorConfig]:
+        from .collectors import KNOWN_COLLECTORS
+
+        for item in value:
+            name = item if isinstance(item, str) else item.name
+            if name.casefold() not in KNOWN_COLLECTORS:
+                raise ValueError(f"collector is not supported yet: {name}")
+        return value
 
     @field_validator("timezone")
     @classmethod
@@ -202,9 +217,6 @@ def preflight(config_path: str | Path) -> tuple[AppConfig, CompaniesFile]:
     if not resume.is_file():
         raise ConfigError(f"resume file does not exist: {resume}")
     companies = load_companies(companies_path)
-    if config.collectors:
-        names = ", ".join(item if isinstance(item, str) else item.name for item in config.collectors)
-        raise ConfigError(f"configured collectors are not supported yet: {names}")
     model = config.runtime.model or os.getenv("CODEX_MODEL")
     if not model:
         raise ConfigError("runtime model is unset; set runtime.model or CODEX_MODEL")

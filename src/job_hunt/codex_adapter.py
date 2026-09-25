@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Generic, TypeVar
@@ -27,6 +28,8 @@ from .models import (
 
 RECURSION_GUARD = "JOB_HUNT_CODEX_ACTIVE"
 MAX_ATTEMPTS = 2
+MAX_REQUESTS_PER_SECOND = 20
+RETRY_BACKOFF_SECONDS = 0.05
 
 
 class CodexAdapterError(RuntimeError):
@@ -155,6 +158,8 @@ class CodexAdapter:
         self.executable = shutil.which(executable) or executable
         self._runner = runner or subprocess.run
         self.invocations: list[InvocationMetadata] = []
+        self.attempts_started = 0
+        self._last_attempt_started: float | None = None
 
     @property
     def last_metadata(self) -> InvocationMetadata | None:
@@ -215,6 +220,7 @@ class CodexAdapter:
 
         error: CodexAdapterError | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            self._wait_for_attempt(attempt)
             try:
                 output, events = self._run_once(operation, input_data, error)
                 result = operation.output_model.model_validate_json(output)
@@ -240,6 +246,18 @@ class CodexAdapter:
             )
             return result
         raise AssertionError("bounded retry loop exhausted")
+
+    def _wait_for_attempt(self, attempt: int) -> None:
+        if attempt > 1:
+            time.sleep(RETRY_BACKOFF_SECONDS)
+        minimum_interval = 1 / MAX_REQUESTS_PER_SECOND
+        if self._last_attempt_started is not None:
+            elapsed = time.monotonic() - self._last_attempt_started
+            remaining = minimum_interval - elapsed
+            if remaining > 1e-9:
+                time.sleep(remaining)
+        self._last_attempt_started = time.monotonic()
+        self.attempts_started += 1
 
     def _run_once(
         self,

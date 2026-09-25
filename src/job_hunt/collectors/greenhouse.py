@@ -173,9 +173,11 @@ class GreenhouseCollector(Collector):
         if posting.portal.casefold() != self.name or not posting.portal_job_id:
             return VerifyResult(status=CollectorStatus.FAILED, error="posting is not a Greenhouse requisition")
         url = self._url("jobs/" + quote(posting.portal_job_id, safe=""), {})
+        snapshots: list[RawSnapshot] = []
         try:
             response = self._get(url)
             snapshot = _snapshot(response)
+            snapshots.append(snapshot)
             evidence = [_evidence(snapshot, "official requisition verification response")]
             if response.status_code == 404:
                 return VerifyResult(
@@ -231,7 +233,21 @@ class GreenhouseCollector(Collector):
                 error=str(exc),
             )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            return VerifyResult(status=CollectorStatus.FAILED, error=f"invalid Greenhouse requisition: {exc}")
+            received_response = bool(snapshots)
+            if not snapshots:
+                snapshot = _exception_snapshot(url, 599, str(exc))
+                snapshots.append(snapshot)
+            evidence = [_evidence(snapshots[0], "official requisition verification response was malformed")]
+            return VerifyResult(
+                status=CollectorStatus.FAILED,
+                progress=CollectorProgress(
+                    queries_attempted=1,
+                    queries_completed=1 if received_response else 0,
+                ),
+                snapshots=snapshots,
+                evidence=evidence,
+                error=f"invalid Greenhouse requisition: {exc}",
+            )
 
     def _listing(self, item: object, company: str) -> JobListing:
         if not isinstance(item, dict):
@@ -263,9 +279,12 @@ class GreenhouseCollector(Collector):
         absolute_url = item.get("absolute_url") or (str(listing.canonical_url) if listing.canonical_url else None)
         if not absolute_url:
             raise ValueError("requisition absolute_url is missing")
-        company = _text(item.get("company_name")) or listing.company
-        if self.expected_company and not _same_name(company, self.expected_company):
+        response_company = _text(item.get("company_name"))
+        if response_company and not _same_name(response_company, listing.company):
+            raise ValueError("requisition company does not match the discovered listing")
+        if self.expected_company and not _same_name(listing.company, self.expected_company):
             raise ValueError("requisition company does not match the validated board")
+        company = listing.company
         return NormalizedJobPosting(
             company=company,
             portal=self.name,

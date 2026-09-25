@@ -1,0 +1,75 @@
+{
+  "portal": "amazon",
+  "status": "unsupported",
+  "observed_at": "2026-09-25T00:00:00+00:00",
+  "official_urls": {
+    "home": "https://www.amazon.jobs/en/",
+    "search": "https://www.amazon.jobs/en/search?base_query=software"
+  },
+  "observed_interface": {
+    "search_labels": [
+      "Search results",
+      "Job ID",
+      "Posted",
+      "Updated",
+      "Load more jobs"
+    ],
+    "detail_fields_seen_in_search": [
+      "title",
+      "locations",
+      "job_id",
+      "posted",
+      "updated",
+      "qualifications"
+    ],
+    "access": "public careers site; no credentials, CAPTCHA, or access-control bypass attempted"
+  },
+  "coverage": {
+    "discovery": {
+      "status": "observed",
+      "result": "search results render on official page"
+    },
+    "details": {
+      "status": "not_verified",
+      "result": "complete detail retrieval contract not established"
+    },
+    "pagination": {
+      "status": "not_verified",
+      "result": "Load more jobs is visible, but completion semantics are not established"
+    },
+    "date_meaning": {
+      "status": "observed",
+      "posted": "original publication date",
+      "updated": "portal update time"
+    },
+    "canonical_ids": {
+      "status": "observed",
+      "rule": "Amazon Job ID",
+      "duplicate_key": "company + job_id"
+    },
+    "duplicates": {
+      "status": "not_verified",
+      "result": "no complete result set was available for reconciliation"
+    },
+    "closure_verification": {
+      "status": "not_verified",
+      "availability": "unknown",
+      "result": "HTTP success alone is not availability evidence"
+    }
+  },
+  "blocker": "current inspection found a rendered Amazon Jobs search interface, but no documented, stable machine-readable contract for complete details, pagination, duplicate closure, or availability verification; no endpoint is assumed",
+  "live_probe": {
+    "started_at": "2026-09-25T12:12:04.893160+00:00",
+    "url": "https://www.amazon.jobs/en/search?base_query=software",
+    "status": "unsupported",
+    "blocker": "current inspection found a rendered Amazon Jobs search interface, but no documented, stable machine-readable contract for complete details, pagination, duplicate closure, or availability verification; no endpoint is assumed",
+    "http_status": 200,
+    "final_url": "https://www.amazon.jobs/en/search?base_query=software",
+    "content_bytes_sampled": 38259,
+    "observed_labels": [
+      "Posted"
+    ],
+    "finished_at": "2026-09-25T12:12:05.519744+00:00",
+    "deadline_seconds": 10
+  }
+}

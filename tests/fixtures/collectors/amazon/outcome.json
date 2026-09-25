@@ -59,9 +59,8 @@
   },
   "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
   "live_probe": {
-    "started_at": "2026-09-25T13:40:56.075502+00:00",
+    "started_at": "2026-09-25T14:11:25.168546+00:00",
     "url": "https://www.amazon.jobs/en/search?base_query=software",
-    "status": "unsupported",
     "http_status": 200,
     "final_url": "https://www.amazon.jobs/en/search?base_query=software",
     "content_bytes_sampled": 38259,
@@ -81,12 +80,13 @@
     "duplicate_probe": {
       "status": "not_observed"
     },
+    "status": "unsupported",
     "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
     "availability_probe": {
       "status": "not_verified",
       "evidence": "no public availability contract was observed; HTTP success is insufficient"
     },
-    "finished_at": "2026-09-25T13:40:56.743592+00:00",
+    "finished_at": "2026-09-25T14:11:25.740354+00:00",
     "deadline_seconds": 10
   }
 }

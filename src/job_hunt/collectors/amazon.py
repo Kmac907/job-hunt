@@ -51,6 +51,7 @@ def _fetch_public_page(url: str, deadline: float) -> dict[str, object]:
     """Fetch one public page, with the whole operation bounded by ``deadline``."""
 
     result: list[dict[str, object]] = []
+    response_holder: list[object] = []
 
     def fetch() -> None:
         response = None
@@ -58,6 +59,7 @@ def _fetch_public_page(url: str, deadline: float) -> dict[str, object]:
             timeout = max(0.1, deadline - monotonic())
             request = Request(url, headers={"User-Agent": "job-hunt-live-probe/1"})
             with urlopen(request, timeout=timeout) as response:  # noqa: S310
+                response_holder.append(response)
                 body = bytearray()
                 complete = False
                 while len(body) < 262144:
@@ -84,6 +86,11 @@ def _fetch_public_page(url: str, deadline: float) -> dict[str, object]:
     worker.start()
     worker.join(max(0.0, deadline - monotonic()))
     if worker.is_alive():
+        if response_holder:
+            try:
+                response_holder[0].close()
+            except (AttributeError, OSError):
+                pass
         return {"error": "TimeoutError: official interface probe deadline exceeded"}
     return result[0] if result else {"error": "RuntimeError: public page probe produced no result"}
 
@@ -150,10 +157,10 @@ def probe_official_interface(deadline_seconds: float = 10.0) -> dict[str, object
     result: dict[str, object] = {
         "started_at": started.isoformat(),
         "url": AMAZON_SEARCH_URL,
-        "status": "unsupported",
     }
     search = _fetch_public_page(AMAZON_SEARCH_URL, deadline)
     if "error" in search:
+        result["status"] = "unsupported"
         result["blocker"] = f"official search probe failed: {search['error']}"
     else:
         body = search["body"]
@@ -227,6 +234,7 @@ def probe_official_interface(deadline_seconds: float = 10.0) -> dict[str, object
             blockers.append("the response exposed no machine-readable pagination or query-completion link")
 
         blockers.append("availability remains unknown because HTTP success is not availability evidence")
+        result["status"] = "supported" if not blockers else "unsupported"
         result["blocker"] = "; ".join(blockers)
 
     result["availability_probe"] = {

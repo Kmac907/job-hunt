@@ -1,0 +1,92 @@
+{
+  "portal": "amazon",
+  "status": "unsupported",
+  "observed_at": "2026-09-25T00:00:00+00:00",
+  "official_urls": {
+    "home": "https://www.amazon.jobs/en/",
+    "search": "https://www.amazon.jobs/en/search?base_query=software"
+  },
+  "observed_interface": {
+    "search_labels": [
+      "Search results",
+      "Job ID",
+      "Posted",
+      "Updated",
+      "Load more jobs"
+    ],
+    "detail_fields_seen_in_search": [
+      "title",
+      "locations",
+      "job_id",
+      "posted",
+      "updated",
+      "qualifications"
+    ],
+    "access": "public careers site; no credentials, CAPTCHA, or access-control bypass attempted"
+  },
+  "coverage": {
+    "discovery": {
+      "status": "observed",
+      "result": "search results render on official page"
+    },
+    "details": {
+      "status": "not_verified",
+      "result": "complete detail retrieval contract not established"
+    },
+    "pagination": {
+      "status": "not_verified",
+      "result": "Load more jobs is visible, but completion semantics are not established"
+    },
+    "date_meaning": {
+      "status": "observed",
+      "posted": "original publication date",
+      "updated": "portal update time"
+    },
+    "canonical_ids": {
+      "status": "observed",
+      "rule": "Amazon Job ID",
+      "duplicate_key": "company + job_id"
+    },
+    "duplicates": {
+      "status": "not_verified",
+      "result": "no complete result set was available for reconciliation"
+    },
+    "closure_verification": {
+      "status": "not_verified",
+      "availability": "unknown",
+      "result": "HTTP success alone is not availability evidence"
+    }
+  },
+  "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
+  "live_probe": {
+    "started_at": "2026-09-25T18:00:17.472858+00:00",
+    "url": "https://www.amazon.jobs/en/search?base_query=software",
+    "http_status": 200,
+    "final_url": "https://www.amazon.jobs/en/search?base_query=software",
+    "content_bytes_sampled": 38259,
+    "search_complete": true,
+    "observed_labels": [
+      "Posted"
+    ],
+    "detail_candidates": [],
+    "pagination_candidates": [],
+    "search_job_ids": [],
+    "detail_probe": {
+      "status": "not_observed"
+    },
+    "pagination_probe": {
+      "status": "not_observed"
+    },
+    "duplicate_probe": {
+      "status": "not_observed"
+    },
+    "status": "unsupported",
+    "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
+    "availability_probe": {
+      "status": "not_verified",
+      "evidence": "no public availability contract was observed; HTTP success is insufficient"
+    },
+    "finished_at": "2026-09-25T18:00:18.109767+00:00",
+    "deadline_seconds": 10
+  }
+}

@@ -73,11 +73,19 @@ def sorted_jobs(snapshot: ReportSnapshot) -> dict[Disposition, list[ReportJobRec
 
 def render_json(snapshot: ReportSnapshot) -> str:
     grouped = sorted_jobs(snapshot)
+    assessed = sum(job.assessment is not None for job in snapshot.jobs)
     payload = {
         "schema_version": snapshot.schema_version,
         "run_id": snapshot.run_id,
         "as_of": snapshot.as_of.isoformat(),
         "scope": snapshot.scope,
+        "result": (
+            "no jobs found in assessed scope"
+            if not snapshot.jobs
+            else "no qualifying assessed jobs"
+            if assessed and not grouped[Disposition.SHORTLISTED]
+            else "qualifying jobs found"
+        ),
         "coverage": snapshot.coverage.model_dump(mode="json"),
         "jobs": {
             disposition.value: [job.model_dump(mode="json") for job in grouped[disposition]]
@@ -109,6 +117,14 @@ def render_markdown(snapshot: ReportSnapshot) -> str:
         if coverage.scope_complete is True
         else "no" if coverage.scope_complete is False else "not established"
     )
+    assessed = sum(job.assessment is not None for job in snapshot.jobs)
+    result = (
+        "no jobs found in assessed scope"
+        if not snapshot.jobs
+        else "no qualifying assessed jobs"
+        if assessed and not coverage.final_dispositions[Disposition.SHORTLISTED]
+        else "qualifying jobs found"
+    )
     lines = [
         f"# Job report - {_markdown(snapshot.as_of.isoformat())}",
         "",
@@ -125,6 +141,7 @@ def render_markdown(snapshot: ReportSnapshot) -> str:
             f"{_TITLES[item].lower()}={coverage.final_dispositions[item]}"
             for item in DISPOSITION_ORDER
         ),
+        f"- Result: {result}",
         "",
         "### Attempt history",
         "",

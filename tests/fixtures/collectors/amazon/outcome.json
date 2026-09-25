@@ -57,19 +57,36 @@
       "result": "HTTP success alone is not availability evidence"
     }
   },
-  "blocker": "current inspection found a rendered Amazon Jobs search interface, but no documented, stable machine-readable contract for complete details, pagination, duplicate closure, or availability verification; no endpoint is assumed",
+  "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
   "live_probe": {
-    "started_at": "2026-09-25T12:12:04.893160+00:00",
+    "started_at": "2026-09-25T13:40:56.075502+00:00",
     "url": "https://www.amazon.jobs/en/search?base_query=software",
     "status": "unsupported",
-    "blocker": "current inspection found a rendered Amazon Jobs search interface, but no documented, stable machine-readable contract for complete details, pagination, duplicate closure, or availability verification; no endpoint is assumed",
     "http_status": 200,
     "final_url": "https://www.amazon.jobs/en/search?base_query=software",
     "content_bytes_sampled": 38259,
+    "search_complete": true,
     "observed_labels": [
       "Posted"
     ],
-    "finished_at": "2026-09-25T12:12:05.519744+00:00",
+    "detail_candidates": [],
+    "pagination_candidates": [],
+    "search_job_ids": [],
+    "detail_probe": {
+      "status": "not_observed"
+    },
+    "pagination_probe": {
+      "status": "not_observed"
+    },
+    "duplicate_probe": {
+      "status": "not_observed"
+    },
+    "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
+    "availability_probe": {
+      "status": "not_verified",
+      "evidence": "no public availability contract was observed; HTTP success is insufficient"
+    },
+    "finished_at": "2026-09-25T13:40:56.743592+00:00",
     "deadline_seconds": 10
   }
 }

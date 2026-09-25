@@ -59,7 +59,7 @@
   },
   "blocker": "the search response exposed no canonical /en/jobs/<id> detail link; the response exposed no machine-readable pagination or query-completion link; availability remains unknown because HTTP success is not availability evidence",
   "live_probe": {
-    "started_at": "2026-09-25T16:20:25.622852+00:00",
+    "started_at": "2026-09-25T16:25:13.979142+00:00",
     "url": "https://www.amazon.jobs/en/search?base_query=software",
     "http_status": 200,
     "final_url": "https://www.amazon.jobs/en/search?base_query=software",
@@ -86,7 +86,7 @@
       "status": "not_verified",
       "evidence": "no public availability contract was observed; HTTP success is insufficient"
     },
-    "finished_at": "2026-09-25T16:20:26.227915+00:00",
+    "finished_at": "2026-09-25T16:25:14.642037+00:00",
     "deadline_seconds": 10
   }
 }

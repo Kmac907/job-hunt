@@ -1,0 +1,8 @@
+{
+  "id": "job-2",
+  "text": "Data Engineer",
+  "description": "Work with data.",
+  "hostedUrl": "https://jobs.lever.co/example/job-2",
+  "state": "closed",
+  "categories": {"allLocations": ["Remote"]}
+}

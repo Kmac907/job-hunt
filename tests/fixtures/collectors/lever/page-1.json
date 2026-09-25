@@ -1,0 +1,8 @@
+[
+  {
+    "id": "job-2",
+    "text": "Data Engineer (duplicate)",
+    "hostedUrl": "https://jobs.lever.co/example/job-2"
+  },
+  {"id": "job-3", "text": "Support Engineer", "employer": "Example Corp"}
+]

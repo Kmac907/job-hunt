@@ -1,0 +1,41 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "title": "Platform Engineer",
+      "location": "Anchorage, AK",
+      "secondaryLocations": [{"location": "Remote - US"}],
+      "department": "Engineering",
+      "isListed": true,
+      "isRemote": true,
+      "descriptionPlain": "Build reliable systems.",
+      "publishedAt": "2026-09-21T12:30:00.393+00:00",
+      "employmentType": "FullTime",
+      "jobUrl": "https://jobs.ashbyhq.com/Example/platform-engineer"
+    },
+    {
+      "title": "Unlisted Engineer",
+      "location": "Remote",
+      "isListed": false,
+      "descriptionHtml": "<p>Direct-link role.</p>",
+      "jobUrl": "https://jobs.ashbyhq.com/Example/unlisted-engineer"
+    },
+    {
+      "title": "Platform Engineer duplicate",
+      "location": "Different",
+      "isListed": true,
+      "descriptionPlain": "Duplicate record.",
+      "jobUrl": "https://jobs.ashbyhq.com/Example/platform-engineer"
+    },
+    {
+      "title": "Missing details",
+      "isListed": true,
+      "jobUrl": "https://jobs.ashbyhq.com/Example/missing-details"
+    },
+    {
+      "location": "Remote",
+      "isListed": true,
+      "descriptionPlain": "Missing title."
+    }
+  ]
+}

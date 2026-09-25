@@ -1,10 +1,7 @@
 {
-  "status": "success",
+  "status": "unsupported",
   "board_token": "qualtrics",
-  "checked_at": "2026-09-25T15:02:15.307045+00:00",
-  "reason": "current public board identity and listing response validated",
-  "evidence": [
-    "1b6f2bc1a576dbece0735247c6f1018162ab0c29f5e86702ca9de3984af68dae",
-    "73bbfc148e787d57644d382eb8dc19b8451a04066703fe5b760c408f2ab0ec70"
-  ]
+  "checked_at": null,
+  "reason": "live check not run; run pytest -m live tests/acceptance/test_greenhouse_live.py",
+  "evidence": []
 }

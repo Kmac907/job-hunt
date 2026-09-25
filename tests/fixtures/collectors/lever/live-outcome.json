@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-25T14:29:27.989076+00:00",
+  "checked_at": "2026-09-25T14:31:40.871346+00:00",
   "error": "RuntimeError: Lever detail omitted a recognized posting state",
   "provider": "lever",
   "site": "xmlexample",

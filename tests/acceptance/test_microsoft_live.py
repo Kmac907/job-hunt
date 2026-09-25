@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,11 +38,25 @@ def test_microsoft_live_probe_persists_current_outcome() -> None:
     }
     try:
         request = Request(MICROSOFT_ENTRYPOINT, headers={"User-Agent": "job-hunt/1.0"})
-        with urlopen(request, timeout=DEADLINE_SECONDS) as response:  # noqa: S310
-            outcome.update(status="unsupported", http_status=response.status, final_url=response.geturl())
-            outcome["blocker"] = MICROSOFT_BLOCKER
-    except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as exc:
-        outcome.update(status="unsupported", blocker=f"official probe blocked: {type(exc).__name__}: {exc}")
+        probe_result: list[tuple[str, object]] = []
+
+        def probe() -> None:
+            try:
+                with urlopen(request, timeout=DEADLINE_SECONDS) as response:  # noqa: S310
+                    probe_result.append(("response", (response.status, response.geturl())))
+            except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as exc:
+                probe_result.append(("blocked", f"official probe blocked: {type(exc).__name__}: {exc}"))
+
+        worker = threading.Thread(target=probe, daemon=True)
+        worker.start()
+        worker.join(max(0, started + DEADLINE_SECONDS - time.monotonic()))
+        if worker.is_alive():
+            outcome.update(status="unsupported", blocker="official probe exceeded its hard deadline")
+        elif probe_result[0][0] == "response":
+            status, final_url = probe_result[0][1]  # type: ignore[misc]
+            outcome.update(status="unsupported", http_status=status, final_url=final_url, blocker=MICROSOFT_BLOCKER)
+        else:
+            outcome.update(status="unsupported", blocker=probe_result[0][1])
     finally:
         outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
         OUTCOME.write_text(json.dumps(outcome, indent=2) + "\n", encoding="utf-8")

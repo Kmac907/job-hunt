@@ -130,8 +130,8 @@ def _job_url(job: Mapping[str, Any], board_name: str) -> str:
     if (
         parsed.scheme != "https"
         or parsed.hostname != "jobs.ashbyhq.com"
-        or len(parts) < 2
-        or parts[0] != board_name
+        or not parts
+        or (len(parts) > 1 and parts[0] != board_name)
     ):
         raise AshbyContractError(f"jobUrl is not an Ashby hosted HTTPS URL: {url}")
     return url
@@ -337,7 +337,9 @@ class AshbyCollector(Collector):
                     if self._normalize(posting.company, job, snapshot.fetched_at).job_id == posting.job_id:
                         found = True
                         break
-                except (AshbyContractError, ValueError):
+                except (AshbyContractError, ValueError) as exc:
+                    if isinstance(job.get("jobUrl"), str) and job["jobUrl"].strip() == str(posting.canonical_url):
+                        raise AshbyContractError(f"Ashby posting is malformed: {exc}") from exc
                     continue
             evidence = CollectorEvidence(
                 snapshot_sha256=snapshot.sha256,

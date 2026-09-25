@@ -66,6 +66,8 @@ def _fetch_public_page(url: str, deadline: float) -> dict[str, object]:
                     if monotonic() >= deadline:
                         raise TimeoutError("official interface probe deadline exceeded")
                     chunk = response.read(min(8192, 262144 - len(body)))
+                    if monotonic() >= deadline:
+                        raise TimeoutError("official interface probe deadline exceeded")
                     if not chunk:
                         complete = True
                         break
@@ -234,7 +236,7 @@ def probe_official_interface(deadline_seconds: float = 10.0) -> dict[str, object
             blockers.append("the response exposed no machine-readable pagination or query-completion link")
 
         blockers.append("availability remains unknown because HTTP success is not availability evidence")
-        result["status"] = "supported" if not blockers else "unsupported"
+        result["status"] = "unsupported"
         result["blocker"] = "; ".join(blockers)
 
     result["availability_probe"] = {

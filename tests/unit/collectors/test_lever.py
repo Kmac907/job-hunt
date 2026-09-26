@@ -3,8 +3,6 @@ from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError
 
-import pytest
-
 from job_hunt.collectors.lever import LeverCollector
 from job_hunt.config import CollectorConfig
 

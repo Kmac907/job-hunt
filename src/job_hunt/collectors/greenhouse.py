@@ -70,7 +70,6 @@ class GreenhouseCollector(Collector):
     def discover(self, company: str, scope: Mapping[str, object] | None = None) -> DiscoverResult:
         del scope
         expected = self.expected_company or company.strip()
-        now = datetime.now(timezone.utc)
         snapshots: list[RawSnapshot] = []
         failures: list[str] = []
         try:
